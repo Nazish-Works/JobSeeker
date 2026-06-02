@@ -1,0 +1,205 @@
+"""
+modules/ai_processor.py
+Uses Claude to:
+  1. Score job relevance (0–100) against Nazish's profile
+  2. Tailor the resume bullet points for matched jobs
+  3. Generate a short cover note
+"""
+
+import os
+import json
+import logging
+import anthropic
+from modules.scraper import Job
+
+log = logging.getLogger(__name__)
+
+client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+MODEL  = "claude-sonnet-4-20250514"
+
+# ── Nazish's profile snapshot (used in prompts) ───────────────────────────────
+PROFILE_SUMMARY = """
+Name: Nazish Mehdi
+Current Role: Senior Solutions Analyst @ ThoughtSpot (Aug 2024–Present)
+Previous: Data Analyst @ SagasIT Analytics / AIMLEAP (Mar 2021–Apr 2023)
+Total Experience: ~5 years
+Current Location: Bengaluru, India (prefers Bengaluru onsite roles; open to Mumbai, Pune, Hyderabad onsite; open to remote if no onsite match)
+Education: B.E. Electronics & Communications, 2020
+
+Core Skills:
+- Python (Selenium, Pandas), SQL (Advanced), Java/Scala (exposure)
+- Data Engineering & ETL: Matillion ETL, dbt, Fivetran, BigQuery, Snowflake, Postgres, S3
+- Cloud: Azure VM, AWS (EC2, S3), GCP (BigQuery), Docker/Kubernetes exposure
+- Analytics & BI: ThoughtSpot (Architect/Professional certified), Power BI, Looker
+- Tools: Git, UiPath, Airflow
+
+Key Achievements:
+- Designed scalable data models for 50+ enterprise customers (up to 100B rows)
+- Query performance optimization on Snowflake, Databricks, Redshift, Oracle
+- Led Tableau-to-ThoughtSpot migrations
+- Built Python ETL pipelines, real-time fleet tracking, Selenium scrapers on AWS EC2
+- Implemented RLS and PII data masking
+- Converted customer from Essentials to higher TCV within 3 months
+
+Certifications: ThoughtSpot (6 certs), Snowflake (5 certs), Power BI, Advanced SQL
+
+Nationality: Indian | Currently in Bengaluru | Notice: 30 days
+"""
+
+BASE_RESUME_BULLETS = """
+ThoughtSpot | Senior Solutions Analyst | Aug 2024–Present
+- Design and implement unique data models for 50+ enterprise customers, optimizing performance for workloads up to 100 billion rows.
+- Provide technical consultancy on query performance optimization for Snowflake, Databricks, Redshift, and Oracle.
+- Lead technical migrations from legacy systems (Tableau) to ThoughtSpot.
+- Implemented Git-based version control for data assets with CI/CD-like workflows.
+- Developed complex aggregated formulas and data masking strategies for PII use cases using Row Level Security (RLS).
+- Trained customer data models to use Spotter and NLP to generate automated insights.
+
+SagasIT Analytics / AIMLEAP | Data Analyst | Mar 2021–Apr 2023
+- Built Python-based automated ETL pipeline extracting via Semrush API, loading into BigQuery.
+- Engineered real-time fleet tracking system with Python and SQL Server, automated hourly data ingestion and Power BI refreshes.
+- Developed high-scale bots using Selenium and AWS EC2 to bypass anti-bot tools, storing PDF datasets in S3.
+- Deployed web scraping bots using Selenium and Python on Amazon WorkSpace.
+- Built data pipelines linking scraped content to PostgreSQL using SQL (pgAdmin).
+- Automated data extraction with UiPath, automated cleaning, appended results to Excel.
+"""
+
+
+# ── 1. Relevance Scoring ─────────────────────────────────────────────────────
+
+def score_relevance(job: Job) -> dict:
+    """
+    Returns {"score": int, "reasons": str, "missing_skills": list}
+    score 0–100. Jobs below config threshold are skipped.
+    """
+    prompt = f"""
+You are a job-fit evaluator. Given the candidate profile and a job description,
+return ONLY valid JSON with this exact structure (no markdown, no explanation):
+{{
+  "score": <integer 0-100>,
+  "match_reasons": "<2-3 sentence summary of why this is or isn't a good fit>",
+  "missing_skills": ["skill1", "skill2"],
+  "recommended_highlights": ["bullet or skill to emphasise for this JD"]
+}}
+
+Scoring guide:
+- 80–100: Strong match (title, stack, seniority all align)
+- 60–79: Good match (most skills match, minor gaps)
+- 40–59: Partial match (some relevant experience but key gaps)
+- Below 40: Poor fit
+
+CANDIDATE PROFILE:
+{PROFILE_SUMMARY}
+
+JOB TITLE: {job.title}
+COMPANY: {job.company}
+LOCATION: {job.location}
+REGION: {job.region}
+JOB DESCRIPTION:
+{job.description[:2500]}
+"""
+    try:
+        response = client.messages.create(
+            model=MODEL, max_tokens=600,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = response.content[0].text.strip()
+        return json.loads(text)
+    except Exception as e:
+        log.error(f"Relevance scoring failed for {job.job_id}: {e}")
+        return {"score": 0, "match_reasons": "Error", "missing_skills": [], "recommended_highlights": []}
+
+
+# ── 2. Resume Tailoring ───────────────────────────────────────────────────────
+
+def tailor_resume(job: Job, relevance_data: dict) -> str:
+    """
+    Returns a full tailored resume as plain text, customised for this specific JD.
+    """
+    highlights = "\n".join(f"- {h}" for h in relevance_data.get("recommended_highlights", []))
+    missing    = ", ".join(relevance_data.get("missing_skills", []))
+
+    # For Saudi jobs: add relocation note, omit photo recommendation, add passport
+    region_note = ""
+    if job.region == "Saudi":
+        region_note = """
+IMPORTANT FOR SAUDI ROLE:
+- Mention availability to relocate to Saudi Arabia immediately (30-day notice)
+- Include passport number Z6029437 in personal details
+- Do NOT include photo recommendation (not required in Saudi)
+- Emphasise experience with large-scale enterprise clients (aligns with Saudi Aramco, STC, NEOM culture)
+"""
+    else:
+        region_note = """
+IMPORTANT FOR INDIA ROLE:
+- Based in Bengaluru — highlight this for Bengaluru onsite roles (no relocation needed)
+- For Mumbai/Pune/Hyderabad roles, mention willingness to relocate within India (30-day notice)
+- For remote roles, mention current Bengaluru base and full remote availability
+"""
+
+    prompt = f"""
+You are an expert resume writer. Rewrite Nazish Mehdi's resume bullet points
+to maximise fit for the job below. Keep all facts 100% accurate — do not invent
+experience or skills she doesn't have. Only reorder, rephrase, and emphasise
+what's most relevant to this JD.
+
+OUTPUT FORMAT: Return the complete tailored resume as plain text.
+Structure: Professional Summary → Technical Skills → Professional Experience
+(most relevant bullets first) → Core Competencies → Certifications → Education
+
+JOB DETAILS:
+Title: {job.title}
+Company: {job.company}
+Location: {job.location}, {job.region}
+Description: {job.description[:2500]}
+
+KEY SKILLS TO EMPHASISE FOR THIS ROLE:
+{highlights if highlights else "Focus on Python, SQL, cloud data platforms"}
+
+SKILLS MENTIONED IN JD BUT GAPS:
+{missing if missing else "None identified"}
+
+{region_note}
+
+ORIGINAL RESUME CONTENT:
+{BASE_RESUME_BULLETS}
+
+CANDIDATE CONTACT:
+Nazish Mehdi | nazishmehdi26@gmail.com | +917349328590
+LinkedIn: https://www.linkedin.com/in/nazishmehdi-80b0a5188/
+Passport: Z6029437 | Notice Period: 30 days
+"""
+    try:
+        response = client.messages.create(
+            model=MODEL, max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        log.error(f"Resume tailoring failed for {job.job_id}: {e}")
+        return ""
+
+
+# ── 3. Cover Note ─────────────────────────────────────────────────────────────
+
+def generate_cover_note(job: Job, relevance_data: dict) -> str:
+    """Generates a short 3-paragraph cover note for the application."""
+    prompt = f"""
+Write a concise, confident 3-paragraph cover note (not a full letter, just the body)
+for Nazish Mehdi applying to this role. Tone: professional but not stiff.
+Avoid generic phrases like "I am writing to express my interest."
+Start with the most compelling match point.
+
+JOB: {job.title} at {job.company}, {job.location}
+WHY SHE FITS: {relevance_data.get('match_reasons', '')}
+JD HIGHLIGHTS: {job.description[:1000]}
+"""
+    try:
+        response = client.messages.create(
+            model=MODEL, max_tokens=500,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        log.error(f"Cover note generation failed: {e}")
+        return ""
