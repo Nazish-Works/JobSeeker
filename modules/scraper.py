@@ -202,6 +202,13 @@ def scrape_linkedin_saudi(keyword: str, seen: set) -> list:
                 loc     = loc_el.get_text(strip=True)    if loc_el   else "Saudi Arabia"
                 href    = link_el.get("href", "").split("?")[0]
 
+                # ✅ Only keep jobs actually in Saudi/Gulf — reject Indian results
+                saudi_terms = ["saudi", "riyadh", "jeddah", "dammam", "ksa",
+                               "khobar", "neom", "dhahran", "mecca", "medina",
+                               "gulf", "middle east", "united arab", "dubai", "qatar"]
+                if not any(t in loc.lower() for t in saudi_terms):
+                    continue
+
                 jid = _make_id(title, company)
                 if jid in seen:
                     continue
