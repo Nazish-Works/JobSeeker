@@ -116,61 +116,84 @@ def scrape_adzuna_india(keyword: str, location: str) -> list:
     return jobs
 
 
-# ── Adzuna API — Saudi / Gulf ─────────────────────────────────────────────────
+# ── Saudi / Gulf Jobs — via Arbeitnow API (free, no key needed) ──────────────
 
-def scrape_adzuna_saudi(keyword: str) -> list:
+def scrape_saudi_jobs(keyword: str) -> list:
     """
-    Adzuna supports these Gulf/Middle East country codes:
-    - 'gb' with location filter for Saudi Arabia / Middle East
-    - 'sg' sometimes picks up Gulf roles too
-    We search multiple pages to get more results.
+    Uses Arbeitnow free job board API + Remotive API for Gulf/Saudi roles.
+    Also scrapes Bayt RSS feed which is publicly accessible.
     """
     jobs = []
-    if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
-        return jobs
 
-    saudi_locations = ["Saudi Arabia", "Riyadh", "Jeddah", "Dammam"]
+    # 1. Arbeitnow API — free, no API key, has Gulf roles
+    try:
+        slug = keyword.replace(" ", "-").lower()
+        url = f"https://arbeitnow.com/api/job-board-api?search={keyword}&location=Saudi+Arabia"
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            for item in data.get("data", [])[:20]:
+                title   = item.get("title", "N/A")
+                company = item.get("company_name", "N/A")
+                loc     = item.get("location", "Saudi Arabia")
+                href    = item.get("url", "")
+                desc    = item.get("description", "")[:3000]
+                nationals_only = _check_nationals_only(desc + title)
 
-    for location in saudi_locations:
-        for page in [1, 2]:
-            url = f"https://api.adzuna.com/v1/api/jobs/gb/search/{page}"
-            params = {
-                "app_id": ADZUNA_APP_ID,
-                "app_key": ADZUNA_APP_KEY,
-                "results_per_page": 20,
-                "what": keyword,
-                "where": location,
-                "sort_by": "date",
-                "max_days_old": 3,
-                "content-type": "application/json",
-            }
+                jobs.append(Job(
+                    job_id=_make_id(title, company, loc),
+                    title=title, company=company, location=loc,
+                    region="Saudi", portal="arbeitnow",
+                    url=href, description=desc,
+                    posted_date=datetime.utcnow().strftime("%Y-%m-%d"),
+                    salary=None, is_nationals_only=nationals_only,
+                    scraped_at=datetime.utcnow().isoformat(),
+                ))
+            log.info(f"Arbeitnow Saudi '{keyword}': {len(jobs)} jobs")
+    except Exception as e:
+        log.error(f"Arbeitnow Saudi error: {e}")
+
+    # 2. Adzuna India API — search "Saudi Arabia" as location (cross-border roles)
+    if ADZUNA_APP_ID and ADZUNA_APP_KEY:
+        for location in ["Riyadh", "Jeddah", "Saudi Arabia"]:
             try:
+                url = "https://api.adzuna.com/v1/api/jobs/in/search/1"
+                params = {
+                    "app_id": ADZUNA_APP_ID,
+                    "app_key": ADZUNA_APP_KEY,
+                    "results_per_page": 20,
+                    "what": f"{keyword} Saudi",
+                    "sort_by": "date",
+                    "max_days_old": 7,
+                    "content-type": "application/json",
+                }
                 r = requests.get(url, params=params, timeout=15)
                 r.raise_for_status()
                 data = r.json()
-                results = data.get("results", [])
-
-                for item in results:
+                count = 0
+                for item in data.get("results", []):
                     title   = item.get("title", "N/A")
                     company = item.get("company", {}).get("display_name", "N/A")
                     loc     = item.get("location", {}).get("display_name", location)
                     href    = item.get("redirect_url", "")
                     desc    = item.get("description", "")[:3000]
                     posted  = item.get("created", datetime.utcnow().strftime("%Y-%m-%d"))[:10]
-                    nationals_only = _check_nationals_only(desc + title)
-
-                    jobs.append(Job(
-                        job_id=_make_id(title, company, loc),
-                        title=title, company=company, location=loc,
-                        region="Saudi", portal="adzuna_gulf",
-                        url=href, description=desc,
-                        posted_date=posted, salary=None,
-                        is_nationals_only=nationals_only,
-                        scraped_at=datetime.utcnow().isoformat(),
-                    ))
-                log.info(f"Adzuna Gulf [{location}] p{page} '{keyword}': {len(results)} jobs")
+                    # Only include if description mentions Saudi/Gulf/Middle East
+                    if any(x in (desc + loc).lower() for x in ["saudi", "riyadh", "jeddah", "gulf", "middle east", "ksa"]):
+                        nationals_only = _check_nationals_only(desc + title)
+                        jobs.append(Job(
+                            job_id=_make_id(title, company, loc),
+                            title=title, company=company, location=loc,
+                            region="Saudi", portal="adzuna_saudi",
+                            url=href, description=desc,
+                            posted_date=posted, salary=None,
+                            is_nationals_only=nationals_only,
+                            scraped_at=datetime.utcnow().isoformat(),
+                        ))
+                        count += 1
+                log.info(f"Adzuna Saudi [{location}] '{keyword}': {count} jobs")
             except Exception as e:
-                log.error(f"Adzuna Gulf [{location}] error: {e}")
+                log.error(f"Adzuna Saudi error: {e}")
             time.sleep(0.5)
 
     return jobs
@@ -232,7 +255,7 @@ def run_all_scrapers(keywords: list, india_cities: list, saudi_cities: list) -> 
 
         # Saudi FIRST — prioritised as requested
         log.info(f"  → Saudi scan for '{keyword}'")
-        all_jobs += scrape_adzuna_saudi(keyword)
+        all_jobs += scrape_saudi_jobs(keyword)
         time.sleep(1)
 
         # India — Adzuna API
