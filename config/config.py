@@ -35,19 +35,14 @@ CANDIDATE_PROFILE = {
 SEARCH_KEYWORDS = [
     "Senior Data Analyst",
     "Data Analyst",
-    "Analytics Engineer",
     "Data Engineer",
+    "Analytics Engineer",
     "BI Developer",
-    "Business Intelligence Analyst",
-    "Snowflake Data Analyst",
-    "BigQuery Analyst",
-    "dbt Analyst",
-    "ThoughtSpot",
 ]
 
 # --- Location Preferences ------------------------------------------------
 # India: open to onsite in these cities + remote
-INDIA_PREFERRED_CITIES = ["Bengaluru", "Bangalore", "Mumbai", "Pune", "Hyderabad"]
+INDIA_PREFERRED_CITIES = ["Bengaluru", "Mumbai", "Pune", "Hyderabad"]
 INDIA_ACCEPT_REMOTE = True   # remote accepted if no onsite match in preferred cities
 
 # Saudi Arabia: onsite only
