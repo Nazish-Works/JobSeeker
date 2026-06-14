@@ -40,6 +40,8 @@ from modules.google_integration import (
     save_resume_to_drive, log_job_to_sheet, send_notification_email
 )
 
+os.makedirs("data", exist_ok=True)
+os.makedirs("resumes", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
