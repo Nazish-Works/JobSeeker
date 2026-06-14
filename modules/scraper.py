@@ -149,108 +149,72 @@ def scrape_naukri(keyword: str, location: str, seen: set) -> list:
 
 # ── Saudi / Gulf ──────────────────────────────────────────────────────────────
 
-# LinkedIn Saudi Arabia geoId
-LINKEDIN_SAUDI_GEOID = "102713980"
-
-def scrape_linkedin_saudi(keyword: str, seen: set) -> list:
+def scrape_saudi_jobs(keyword: str, seen: set) -> list:
     """
-    Uses LinkedIn's public jobs guest API — no login, no API key needed.
-    This is the same endpoint LinkedIn uses internally to load job listings.
-    Specifically targets Saudi Arabia using LinkedIn's geoId.
+    Saudi jobs using 3 approaches:
+    1. LinkedIn SEO pages — static HTML, reliable, no auth needed
+    2. NaukriGulf — dedicated Gulf job board
+    3. Adzuna India filtered for Saudi keywords in description
     """
     jobs = []
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.linkedin.com/",
-    }
 
-    for start in [0, 25]:
-        try:
-            url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-            params = {
-                "keywords": keyword,
-                "location": "Saudi Arabia",
-                "geoId": LINKEDIN_SAUDI_GEOID,
-                "f_TPR": "r604800",  # last 7 days
-                "start": start,
-            }
-            r = requests.get(url, headers=headers, params=params, timeout=15)
-            if r.status_code != 200:
-                log.warning(f"LinkedIn Saudi returned {r.status_code} for '{keyword}' start={start}")
-                break
-
+    # 1. LinkedIn SEO static pages — most reliable for Saudi
+    try:
+        slug_kw  = keyword.lower().replace(" ", "-")
+        url = f"https://www.linkedin.com/jobs/{slug_kw}-jobs-saudi-arabia/"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code == 200:
             soup  = BeautifulSoup(r.text, "html.parser")
-            cards = soup.select("li")
+            cards = soup.select("div.base-card, li.jobs-search__results-list > li")
             count = 0
-            for card in cards:
-                title_el = card.select_one("h3.base-search-card__title, h3")
-                comp_el  = card.select_one("h4.base-search-card__subtitle, h4")
-                loc_el   = card.select_one("span.job-search-card__location, span.base-search-card__metadata")
-                link_el  = card.select_one("a.base-card__full-link, a")
-
+            for card in cards[:25]:
+                title_el = card.select_one("h3, .base-search-card__title")
+                comp_el  = card.select_one("h4, .base-search-card__subtitle, .base-card__subtitle")
+                loc_el   = card.select_one(".job-search-card__location, .base-search-card__metadata")
+                link_el  = card.select_one("a")
                 if not title_el or not link_el:
                     continue
-
                 title   = title_el.get_text(strip=True)
-                company = comp_el.get_text(strip=True)   if comp_el  else "N/A"
-                loc     = loc_el.get_text(strip=True)    if loc_el   else "Saudi Arabia"
+                company = comp_el.get_text(strip=True) if comp_el else "N/A"
+                loc     = loc_el.get_text(strip=True)  if loc_el  else "Saudi Arabia"
                 href    = link_el.get("href", "").split("?")[0]
-
-                # ✅ Only keep jobs actually in Saudi/Gulf — reject Indian results
-                saudi_terms = ["saudi", "riyadh", "jeddah", "dammam", "ksa",
-                               "khobar", "neom", "dhahran", "mecca", "medina",
-                               "gulf", "middle east", "united arab", "dubai", "qatar"]
-                if not any(t in loc.lower() for t in saudi_terms):
-                    continue
-
-                jid = _make_id(title, company)
+                jid     = _make_id(title, company)
                 if jid in seen:
                     continue
                 seen.add(jid)
-
                 jobs.append(Job(
                     job_id=jid, title=title, company=company,
-                    location=loc, region="Saudi",
-                    portal="linkedin_saudi",
+                    location=loc, region="Saudi", portal="linkedin_saudi",
                     url=href, description="",
                     posted_date=datetime.utcnow().strftime("%Y-%m-%d"),
-                    salary=None,
-                    is_nationals_only=_check_nationals_only(title + loc),
+                    salary=None, is_nationals_only=_check_nationals_only(title + loc),
                     scraped_at=datetime.utcnow().isoformat(),
                 ))
                 count += 1
+            log.info(f"LinkedIn SEO Saudi '{keyword}': {count} new jobs")
+        else:
+            log.warning(f"LinkedIn SEO Saudi returned {r.status_code} for '{keyword}'")
+    except Exception as e:
+        log.error(f"LinkedIn SEO Saudi error: {e}")
+    time.sleep(1)
 
-            log.info(f"LinkedIn Saudi '{keyword}' start={start}: {count} new jobs")
-            time.sleep(1)
-
-        except Exception as e:
-            log.error(f"LinkedIn Saudi error: {e}")
-            break
-
-    return jobs
-
-
-def scrape_naukrigulf(keyword: str, seen: set) -> list:
-    """Scrapes NaukriGulf for Saudi Arabia jobs."""
-    jobs = []
-    slug = keyword.replace(" ", "-").lower()
+    # 2. NaukriGulf — dedicated Gulf board
     try:
+        slug = keyword.replace(" ", "-").lower()
         r = requests.get(
             f"https://www.naukrigulf.com/{slug}-jobs-in-saudi-arabia",
-            headers=HEADERS, timeout=20
+            headers=HEADERS, timeout=30
         )
         if r.status_code == 200:
             soup  = BeautifulSoup(r.text, "html.parser")
-            cards = soup.select("div.ni-job-tuple, li.jobTuple, div[class*='jobTuple']")
+            cards = soup.select("div.ni-job-tuple, li.jobTuple, div[class*='jobTuple'], div[class*='job-tuple']")
             count = 0
             for card in cards[:20]:
-                title_el = card.select_one("a.designation, a.jobTitle, a[class*='title']")
+                title_el = card.select_one("a.designation, a.jobTitle, a[class*='title'], a[class*='desig']")
                 comp_el  = card.select_one("a.company-name, span.comp-name, a[class*='comp']")
                 if not title_el:
                     continue
@@ -273,18 +237,59 @@ def scrape_naukrigulf(keyword: str, seen: set) -> list:
                 ))
                 count += 1
             log.info(f"NaukriGulf '{keyword}': {count} new jobs")
+        else:
+            log.warning(f"NaukriGulf returned {r.status_code}")
     except Exception as e:
         log.error(f"NaukriGulf error: {e}")
-    return jobs
-
-
-def scrape_saudi_jobs(keyword: str, seen: set) -> list:
-    """Combines LinkedIn Saudi + NaukriGulf for maximum Saudi coverage."""
-    jobs = []
-    jobs += scrape_linkedin_saudi(keyword, seen)
     time.sleep(1)
-    jobs += scrape_naukrigulf(keyword, seen)
-    time.sleep(1)
+
+    # 3. Adzuna India — filter for Saudi keywords in description
+    if ADZUNA_APP_ID:
+        saudi_terms = ["saudi", "riyadh", "jeddah", "dammam", "ksa",
+                       "khobar", "neom", "dhahran", "aramco", "middle east"]
+        try:
+            r = requests.get(
+                "https://api.adzuna.com/v1/api/jobs/in/search/1",
+                params={
+                    "app_id": ADZUNA_APP_ID,
+                    "app_key": ADZUNA_APP_KEY,
+                    "results_per_page": 50,
+                    "what": f"{keyword} Saudi Arabia",
+                    "sort_by": "date",
+                    "max_days_old": 7,
+                },
+                timeout=15
+            )
+            r.raise_for_status()
+            count = 0
+            for item in r.json().get("results", []):
+                title   = item.get("title", "N/A")
+                company = item.get("company", {}).get("display_name", "N/A")
+                desc    = item.get("description", "")[:3000]
+                loc     = item.get("location", {}).get("display_name", "")
+                # Only keep if Saudi terms appear in desc or title
+                if not any(t in (desc + title + loc).lower() for t in saudi_terms):
+                    continue
+                jid = _make_id(title, company)
+                if jid in seen:
+                    continue
+                seen.add(jid)
+                jobs.append(Job(
+                    job_id=jid, title=title, company=company,
+                    location=loc or "Saudi Arabia", region="Saudi",
+                    portal="adzuna_saudi", url=item.get("redirect_url", ""),
+                    description=desc,
+                    posted_date=item.get("created", "")[:10],
+                    salary=None,
+                    is_nationals_only=_check_nationals_only(desc + title),
+                    scraped_at=datetime.utcnow().isoformat(),
+                ))
+                count += 1
+            log.info(f"Adzuna Saudi filter '{keyword}': {count} new jobs")
+        except Exception as e:
+            log.error(f"Adzuna Saudi filter error: {e}")
+
+    log.info(f"Total Saudi jobs for '{keyword}': {len(jobs)}")
     return jobs
 
 
