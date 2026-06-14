@@ -1,9 +1,7 @@
 """
 modules/google_integration.py
-Uses Google Service Account (no browser auth needed) to:
-  - Save tailored resumes to Google Drive
-  - Log jobs to Google Sheets tracker
-  - Send notification emails via Gmail
+Saves resumes to Nazish's shared Google Drive folder.
+Logs jobs to Google Sheets with a new tab per day (e.g. "14 Jun 2026").
 """
 
 import os
@@ -13,43 +11,39 @@ from datetime import datetime
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
-from email.mime.text import MIMEText
-import base64
 
 log = logging.getLogger(__name__)
 
 SCOPES = [
-    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/gmail.send",
 ]
 
-GDRIVE_FOLDER_NAME = "JobSeeker — Tailored Resumes"
-GSHEET_NAME        = "JobSeeker — Applications Tracker"
-NOTIFY_EMAIL       = "nazishmehdi26@gmail.com"
+# Nazish's shared Drive folder ID (from the folder URL)
+DRIVE_FOLDER_ID  = "1x1xBlIHRfaRgBPEhtATuggXC0RjBxGMR"
+
+# Nazish's shared Google Sheet ID
+SHEET_ID         = "1x2wL6qks87lbieUeYvqMylrrqX1OEquf2OMqQciWT3o"
+
+NOTIFY_EMAIL     = "nazishmehdi26@gmail.com"
 
 SHEET_HEADERS = [
-    "Date Found", "Job ID", "Portal", "Region", "Job Title", "Company",
-    "Location", "Relevance Score", "Match Reason", "Job URL",
-    "Resume Saved (Drive)", "Cover Note", "Status", "Applied Date", "Notes"
+    "Time", "Job ID", "Portal", "Region", "Job Title", "Company",
+    "Location", "Score", "Match Reason", "Job URL",
+    "Resume (Drive Link)", "Cover Note", "Status", "Applied Date", "Notes"
 ]
 
 
 def _get_creds():
     sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
     if not sa_json:
-        # Fall back to file if running locally
         if os.path.exists("service_account.json"):
             with open("service_account.json") as f:
                 sa_json = f.read()
         else:
-            raise Exception("No GOOGLE_SERVICE_ACCOUNT_JSON secret found!")
-
+            raise Exception("No GOOGLE_SERVICE_ACCOUNT_JSON found!")
     sa_info = json.loads(sa_json)
-    creds = service_account.Credentials.from_service_account_info(
-        sa_info, scopes=SCOPES
-    )
-    return creds
+    return service_account.Credentials.from_service_account_info(sa_info, scopes=SCOPES)
 
 
 def _drive_service():
@@ -61,25 +55,10 @@ def _sheets_service():
 
 # ── Google Drive ──────────────────────────────────────────────────────────────
 
-def _get_or_create_folder(drive, folder_name: str) -> str:
-    q = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    results = drive.files().list(q=q, fields="files(id)").execute()
-    files = results.get("files", [])
-    if files:
-        return files[0]["id"]
-    folder = drive.files().create(
-        body={"name": folder_name, "mimeType": "application/vnd.google-apps.folder"},
-        fields="id"
-    ).execute()
-    log.info(f"Created Drive folder: {folder_name}")
-    return folder["id"]
-
-
 def save_resume_to_drive(job_id: str, company: str, title: str,
                           region: str, resume_text: str) -> str:
     try:
         drive = _drive_service()
-        folder_id = _get_or_create_folder(drive, GDRIVE_FOLDER_NAME)
 
         date_str   = datetime.utcnow().strftime("%Y%m%d")
         safe_co    = company.replace("/", "-").replace(" ", "_")[:30]
@@ -91,15 +70,14 @@ def save_resume_to_drive(job_id: str, company: str, title: str,
             mimetype="text/plain",
             resumable=False
         )
-        file_meta = {"name": filename, "parents": [folder_id]}
+        file_meta = {
+            "name": filename,
+            "parents": [DRIVE_FOLDER_ID]
+        }
         created = drive.files().create(
-            body=file_meta, media_body=media, fields="id,webViewLink"
-        ).execute()
-
-        # Make the file readable by anyone with the link
-        drive.permissions().create(
-            fileId=created["id"],
-            body={"type": "user", "role": "writer", "emailAddress": NOTIFY_EMAIL}
+            body=file_meta,
+            media_body=media,
+            fields="id,webViewLink"
         ).execute()
 
         url = created.get("webViewLink", "")
@@ -110,61 +88,60 @@ def save_resume_to_drive(job_id: str, company: str, title: str,
         return ""
 
 
-# ── Google Sheets ─────────────────────────────────────────────────────────────
+# ── Google Sheets — one tab per day ──────────────────────────────────────────
 
-def _get_or_create_sheet(sheets) -> str:
-    drive = _drive_service()
-    q = f"name='{GSHEET_NAME}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
-    results = drive.files().list(q=q, fields="files(id)").execute()
-    files = results.get("files", [])
+def _get_or_create_tab(sheets, tab_name: str) -> int:
+    """Returns the sheetId for the tab, creating it if it doesn't exist."""
+    meta = sheets.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+    for sheet in meta.get("sheets", []):
+        if sheet["properties"]["title"] == tab_name:
+            return sheet["properties"]["sheetId"]
 
-    if files:
-        return files[0]["id"]
+    # Create the tab
+    result = sheets.spreadsheets().batchUpdate(
+        spreadsheetId=SHEET_ID,
+        body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]}
+    ).execute()
+    new_sheet_id = result["replies"][0]["addSheet"]["properties"]["sheetId"]
 
-    spreadsheet = sheets.spreadsheets().create(body={
-        "properties": {"title": GSHEET_NAME},
-        "sheets": [{"properties": {"title": "Applications"}}]
-    }).execute()
-    sheet_id = spreadsheet["spreadsheetId"]
-
-    # Write headers
+    # Write headers on the new tab
     sheets.spreadsheets().values().update(
-        spreadsheetId=sheet_id,
-        range="Applications!A1",
+        spreadsheetId=SHEET_ID,
+        range=f"'{tab_name}'!A1",
         valueInputOption="RAW",
         body={"values": [SHEET_HEADERS]}
     ).execute()
 
     # Bold the header row
     sheets.spreadsheets().batchUpdate(
-        spreadsheetId=sheet_id,
+        spreadsheetId=SHEET_ID,
         body={"requests": [{
             "repeatCell": {
-                "range": {"sheetId": 0, "startRowIndex": 0, "endRowIndex": 1},
+                "range": {
+                    "sheetId": new_sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": 1
+                },
                 "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
                 "fields": "userEnteredFormat.textFormat.bold"
             }
         }]}
     ).execute()
 
-    # Share the sheet with Nazish so she can view it
-    drive.permissions().create(
-        fileId=sheet_id,
-        body={"type": "user", "role": "writer", "emailAddress": NOTIFY_EMAIL}
-    ).execute()
-
-    log.info(f"Created new tracker sheet: {GSHEET_NAME}")
-    return sheet_id
+    log.info(f"Created new tab: {tab_name}")
+    return new_sheet_id
 
 
-def log_job_to_sheet(job, relevance_data: dict,
-                      drive_url: str, cover_note: str):
+def log_job_to_sheet(job, relevance_data: dict, drive_url: str, cover_note: str):
     try:
         sheets = _sheets_service()
-        sheet_id = _get_or_create_sheet(sheets)
+
+        # Tab name = today's date, e.g. "14 Jun 2026"
+        tab_name = datetime.utcnow().strftime("%-d %b %Y")
+        _get_or_create_tab(sheets, tab_name)
 
         row = [
-            datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+            datetime.utcnow().strftime("%H:%M UTC"),
             job.job_id,
             job.portal,
             job.region,
@@ -174,40 +151,35 @@ def log_job_to_sheet(job, relevance_data: dict,
             relevance_data.get("score", ""),
             relevance_data.get("match_reasons", ""),
             job.url,
-            drive_url,
-            cover_note[:500] if cover_note else "",
-            "New",
-            "",
-            "",
+            drive_url if drive_url else "See log",
+            cover_note[:300] if cover_note else "",
+            "New",   # Status — you update this manually
+            "",      # Applied Date
+            "",      # Notes
         ]
 
         sheets.spreadsheets().values().append(
-            spreadsheetId=sheet_id,
-            range="Applications!A:A",
+            spreadsheetId=SHEET_ID,
+            range=f"'{tab_name}'!A:A",
             valueInputOption="USER_ENTERED",
             insertDataOption="INSERT_ROWS",
             body={"values": [row]}
         ).execute()
-        log.info(f"Logged to Sheets: {job.title} @ {job.company}")
+        log.info(f"Logged to Sheets [{tab_name}]: {job.title} @ {job.company}")
     except Exception as e:
         log.error(f"Sheets logging failed: {e}")
 
 
-# ── Email notification (via Gmail API with service account) ───────────────────
+# ── Notification (logged to console / GitHub Actions log) ────────────────────
 
 def send_notification_email(new_jobs: list, recipient: str):
     if not new_jobs:
         return
-    try:
-        # Build plain summary — service accounts can't send Gmail directly
-        # so we log it and the sheet serves as the notification
-        log.info(f"=== {len(new_jobs)} NEW JOB MATCHES ===")
-        for j in new_jobs:
-            log.info(
-                f"[{j.get('region','?')}] {j.get('title','?')} @ "
-                f"{j.get('company','?')} — Score: {j.get('score','?')}/100 — "
-                f"{j.get('url','')}"
-            )
-        log.info(f"Check your Google Sheet: https://drive.google.com")
-    except Exception as e:
-        log.error(f"Notification logging failed: {e}")
+    log.info(f"=== {len(new_jobs)} NEW JOB MATCHES ===")
+    for j in new_jobs:
+        log.info(
+            f"[{j.get('region','?')}] {j.get('title','?')} @ "
+            f"{j.get('company','?')} — Score: {j.get('score','?')}/100 — "
+            f"{j.get('url','')}"
+        )
+    log.info(f"Check your sheet: https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit")
