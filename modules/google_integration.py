@@ -60,10 +60,12 @@ def save_resume_to_drive(job_id: str, company: str, title: str,
     try:
         drive = _drive_service()
 
-        date_str   = datetime.utcnow().strftime("%Y%m%d")
-        safe_co    = company.replace("/", "-").replace(" ", "_")[:30]
-        safe_title = title.replace("/", "-").replace(" ", "_")[:30]
-        filename   = f"{date_str}_{region}_{safe_co}_{safe_title}_{job_id}.txt"
+        date_str   = datetime.utcnow().strftime("%d %b %Y")
+        # Clean up company and title for a readable filename
+        safe_co    = company.replace("/", "-").replace("\\", "-").strip()[:40]
+        safe_title = title.replace("/", "-").replace("\\", "-").strip()[:50]
+        # Format: "14 Jun 2026 — Senior Data Analyst — Google [India].txt"
+        filename   = f"{date_str} — {safe_title} — {safe_co} [{region}].txt"
 
         media = MediaInMemoryUpload(
             resume_text.encode("utf-8"),
