@@ -149,114 +149,102 @@ def scrape_naukri(keyword: str, location: str, seen: set) -> list:
 
 # ── Saudi / Gulf ──────────────────────────────────────────────────────────────
 
-def scrape_saudi_jobs(keyword: str, seen: set) -> list:
+# LinkedIn Saudi Arabia geoId
+LINKEDIN_SAUDI_GEOID = "102713980"
+
+def scrape_linkedin_saudi(keyword: str, seen: set) -> list:
     """
-    Three approaches for Saudi jobs:
-    1. Adzuna UK — international recruiters post Gulf roles on UK boards
-    2. GulfTalent direct scrape
-    3. Bayt.com direct scrape
-    All results filtered to only keep genuine Saudi/Gulf jobs.
+    Uses LinkedIn's public jobs guest API — no login, no API key needed.
+    This is the same endpoint LinkedIn uses internally to load job listings.
+    Specifically targets Saudi Arabia using LinkedIn's geoId.
     """
     jobs = []
-    gulf_terms = ["saudi", "riyadh", "jeddah", "dammam", "ksa",
-                  "gulf", "middle east", "neom", "khobar", "dhahran", "aramco"]
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.linkedin.com/",
+    }
 
-    # 1. Adzuna UK — search "keyword + Saudi Arabia"
-    if ADZUNA_APP_ID:
-        for search in [f"{keyword} Saudi Arabia", f"{keyword} Riyadh"]:
-            try:
-                r = requests.get(
-                    "https://api.adzuna.com/v1/api/jobs/gb/search/1",
-                    params={
-                        "app_id": ADZUNA_APP_ID,
-                        "app_key": ADZUNA_APP_KEY,
-                        "results_per_page": 20,
-                        "what": search,
-                        "sort_by": "date",
-                        "max_days_old": 7,
-                    },
-                    timeout=15
-                )
-                r.raise_for_status()
-                count = 0
-                for item in r.json().get("results", []):
-                    title   = item.get("title", "N/A")
-                    company = item.get("company", {}).get("display_name", "N/A")
-                    desc    = item.get("description", "")[:3000]
-                    loc     = item.get("location", {}).get("display_name", "Saudi Arabia")
-                    combined = (title + desc + loc).lower()
-                    if not any(t in combined for t in gulf_terms):
-                        continue
-                    jid = _make_id(title, company)
-                    if jid in seen:
-                        continue
-                    seen.add(jid)
-                    jobs.append(Job(
-                        job_id=jid, title=title, company=company, location=loc,
-                        region="Saudi", portal="adzuna_gulf",
-                        url=item.get("redirect_url", ""),
-                        description=desc,
-                        posted_date=item.get("created", "")[:10],
-                        salary=None,
-                        is_nationals_only=_check_nationals_only(desc + title),
-                        scraped_at=datetime.utcnow().isoformat(),
-                    ))
-                    count += 1
-                log.info(f"Adzuna Gulf '{search}': {count} new jobs")
-            except Exception as e:
-                log.error(f"Adzuna Gulf error: {e}")
-            time.sleep(0.5)
+    for start in [0, 25]:
+        try:
+            url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+            params = {
+                "keywords": keyword,
+                "location": "Saudi Arabia",
+                "geoId": LINKEDIN_SAUDI_GEOID,
+                "f_TPR": "r604800",  # last 7 days
+                "start": start,
+            }
+            r = requests.get(url, headers=headers, params=params, timeout=15)
+            if r.status_code != 200:
+                log.warning(f"LinkedIn Saudi returned {r.status_code} for '{keyword}' start={start}")
+                break
 
-    # 2. GulfTalent scrape
-    try:
-        slug = keyword.replace(" ", "-").lower()
-        r = requests.get(
-            f"https://www.gulftalent.com/saudi-arabia/jobs/{slug}",
-            headers=HEADERS, timeout=15
-        )
-        if r.status_code == 200:
             soup  = BeautifulSoup(r.text, "html.parser")
-            cards = soup.select("div.job_listing, article.job-listing, li.job")
+            cards = soup.select("li")
             count = 0
-            for card in cards[:15]:
-                title_el = card.select_one("h3 a, h2 a, a[class*='title']")
-                comp_el  = card.select_one("span.company, div.company-name, span[class*='company']")
-                if not title_el:
+            for card in cards:
+                title_el = card.select_one("h3.base-search-card__title, h3")
+                comp_el  = card.select_one("h4.base-search-card__subtitle, h4")
+                loc_el   = card.select_one("span.job-search-card__location, span.base-search-card__metadata")
+                link_el  = card.select_one("a.base-card__full-link, a")
+
+                if not title_el or not link_el:
                     continue
+
                 title   = title_el.get_text(strip=True)
-                company = comp_el.get_text(strip=True) if comp_el else "N/A"
-                jid     = _make_id(title, company)
+                company = comp_el.get_text(strip=True)   if comp_el  else "N/A"
+                loc     = loc_el.get_text(strip=True)    if loc_el   else "Saudi Arabia"
+                href    = link_el.get("href", "").split("?")[0]
+
+                jid = _make_id(title, company)
                 if jid in seen:
                     continue
                 seen.add(jid)
-                href = title_el.get("href", "")
+
                 jobs.append(Job(
                     job_id=jid, title=title, company=company,
-                    location="Saudi Arabia", region="Saudi",
-                    portal="gulftalent", url=href, description="",
+                    location=loc, region="Saudi",
+                    portal="linkedin_saudi",
+                    url=href, description="",
                     posted_date=datetime.utcnow().strftime("%Y-%m-%d"),
-                    salary=None, is_nationals_only=False,
+                    salary=None,
+                    is_nationals_only=_check_nationals_only(title + loc),
                     scraped_at=datetime.utcnow().isoformat(),
                 ))
                 count += 1
-            log.info(f"GulfTalent '{keyword}': {count} new jobs")
-    except Exception as e:
-        log.error(f"GulfTalent error: {e}")
 
-    # 3. Bayt scrape
+            log.info(f"LinkedIn Saudi '{keyword}' start={start}: {count} new jobs")
+            time.sleep(1)
+
+        except Exception as e:
+            log.error(f"LinkedIn Saudi error: {e}")
+            break
+
+    return jobs
+
+
+def scrape_naukrigulf(keyword: str, seen: set) -> list:
+    """Scrapes NaukriGulf for Saudi Arabia jobs."""
+    jobs = []
+    slug = keyword.replace(" ", "-").lower()
     try:
-        slug = keyword.replace(" ", "-").lower()
         r = requests.get(
-            f"https://www.bayt.com/en/saudi-arabia/jobs/{slug}-jobs/",
-            headers=HEADERS, timeout=15
+            f"https://www.naukrigulf.com/{slug}-jobs-in-saudi-arabia",
+            headers=HEADERS, timeout=20
         )
         if r.status_code == 200:
             soup  = BeautifulSoup(r.text, "html.parser")
-            cards = soup.select("li[data-js-job], div.has-pointer-d")
+            cards = soup.select("div.ni-job-tuple, li.jobTuple, div[class*='jobTuple']")
             count = 0
-            for card in cards[:15]:
-                title_el = card.select_one("h2.jb-title a, a[data-automation-id='job-title']")
-                comp_el  = card.select_one("span[data-automation-id='company-name'], b.jb-company")
+            for card in cards[:20]:
+                title_el = card.select_one("a.designation, a.jobTitle, a[class*='title']")
+                comp_el  = card.select_one("a.company-name, span.comp-name, a[class*='comp']")
                 if not title_el:
                     continue
                 title   = title_el.get_text(strip=True)
@@ -267,20 +255,29 @@ def scrape_saudi_jobs(keyword: str, seen: set) -> list:
                 seen.add(jid)
                 href = title_el.get("href", "")
                 if href.startswith("/"):
-                    href = "https://www.bayt.com" + href
+                    href = "https://www.naukrigulf.com" + href
                 jobs.append(Job(
                     job_id=jid, title=title, company=company,
                     location="Saudi Arabia", region="Saudi",
-                    portal="bayt", url=href, description="",
+                    portal="naukrigulf", url=href, description="",
                     posted_date=datetime.utcnow().strftime("%Y-%m-%d"),
                     salary=None, is_nationals_only=False,
                     scraped_at=datetime.utcnow().isoformat(),
                 ))
                 count += 1
-            log.info(f"Bayt '{keyword}': {count} new jobs")
+            log.info(f"NaukriGulf '{keyword}': {count} new jobs")
     except Exception as e:
-        log.error(f"Bayt error: {e}")
+        log.error(f"NaukriGulf error: {e}")
+    return jobs
 
+
+def scrape_saudi_jobs(keyword: str, seen: set) -> list:
+    """Combines LinkedIn Saudi + NaukriGulf for maximum Saudi coverage."""
+    jobs = []
+    jobs += scrape_linkedin_saudi(keyword, seen)
+    time.sleep(1)
+    jobs += scrape_naukrigulf(keyword, seen)
+    time.sleep(1)
     return jobs
 
 
