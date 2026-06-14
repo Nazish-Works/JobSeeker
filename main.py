@@ -119,10 +119,10 @@ def run():
 
     log.info(f"After filters: {len(filtered)} jobs to score")
 
-    # Limit to 30 per run to avoid timeout — rest picked up in next scan
-    if len(filtered) > 30:
-        log.info(f"Limiting to 30 jobs this run (will process rest next scan)")
-        filtered = filtered[:30]
+    # Limit to 100 per run — 5 scans/day means up to 500 jobs processed daily
+    if len(filtered) > 100:
+        log.info(f"Limiting to 100 jobs this run (will process rest next scan)")
+        filtered = filtered[:100]
 
     if not filtered:
         log.info("No new qualifying jobs this run. Exiting.")
