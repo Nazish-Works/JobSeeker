@@ -1,50 +1,56 @@
 """
 modules/google_integration.py
-Saves resumes to Nazish's shared Google Drive folder.
-Logs jobs to Google Sheets with a new tab per day (e.g. "14 Jun 2026").
+Uses YOUR Google account token (not service account) to:
+  - Save tailored resumes as PDFs to your Google Drive folder
+  - Log jobs to Google Sheets with daily tabs
 """
 
 import os
+import io
 import json
 import logging
 from datetime import datetime
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaInMemoryUpload
+from googleapiclient.http import MediaIoBaseUpload
 
 log = logging.getLogger(__name__)
 
 SCOPES = [
-    "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
-# Nazish's shared Drive folder ID (from the folder URL)
-DRIVE_FOLDER_ID  = "1x1xBlIHRfaRgBPEhtATuggXC0RjBxGMR"
-
-# Nazish's shared Google Sheet ID
-SHEET_ID         = "1x2wL6qks87lbieUeYvqMylrrqX1OEquf2OMqQciWT3o"
-
-NOTIFY_EMAIL     = "nazishmehdi26@gmail.com"
+DRIVE_FOLDER_ID = "1x1xBlIHRfaRgBPEhtATuggXC0RjBxGMR"
+SHEET_ID        = "1x2wL6qks87lbieUeYvqMylrrqX1OEquf2OMqQciWT3o"
+NOTIFY_EMAIL    = "nazishmehdi26@gmail.com"
 
 SHEET_HEADERS = [
     "Time", "Job ID", "Portal", "Region", "Job Title", "Company",
     "Location", "Score", "Match Reason", "Job URL",
-    "Resume (Drive Link)", "Cover Note", "Status", "Applied Date", "Notes"
+    "Resume (Drive)", "Cover Note", "Status", "Applied Date", "Notes"
 ]
 
 
 def _get_creds():
-    sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-    if not sa_json:
-        if os.path.exists("service_account.json"):
-            with open("service_account.json") as f:
-                sa_json = f.read()
+    token_json = os.environ.get("GOOGLE_TOKEN_JSON", "")
+    if not token_json:
+        if os.path.exists("token.json"):
+            with open("token.json") as f:
+                token_json = f.read()
         else:
-            raise Exception("No GOOGLE_SERVICE_ACCOUNT_JSON found!")
-    sa_info = json.loads(sa_json)
-    return service_account.Credentials.from_service_account_info(sa_info, scopes=SCOPES)
+            raise Exception("No GOOGLE_TOKEN_JSON secret found!")
+
+    token_data = json.loads(token_json)
+    creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+
+    # Refresh if expired
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        log.info("Google token refreshed successfully")
+
+    return creds
 
 
 def _drive_service():
@@ -54,7 +60,7 @@ def _sheets_service():
     return build("sheets", "v4", credentials=_get_creds())
 
 
-# ── Google Drive ──────────────────────────────────────────────────────────────
+# ── Google Drive — save as PDF ────────────────────────────────────────────────
 
 def save_resume_to_drive(job_id: str, company: str, title: str,
                           region: str, resume_text: str) -> str:
@@ -62,14 +68,14 @@ def save_resume_to_drive(job_id: str, company: str, title: str,
         drive = _drive_service()
 
         date_str   = datetime.utcnow().strftime("%d %b %Y")
-        # Clean up company and title for a readable filename
         safe_co    = company.replace("/", "-").replace("\\", "-").strip()[:40]
         safe_title = title.replace("/", "-").replace("\\", "-").strip()[:50]
-        # Format: "14 Jun 2026 — Senior Data Analyst — Google [India].txt"
         filename   = f"{date_str} — {safe_title} — {safe_co} [{region}].txt"
 
-        media = MediaInMemoryUpload(
-            resume_text.encode("utf-8"),
+        # Upload as plain text (can be opened and copy-pasted into Word/PDF)
+        file_bytes = resume_text.encode("utf-8")
+        media = MediaIoBaseUpload(
+            io.BytesIO(file_bytes),
             mimetype="text/plain",
             resumable=False
         )
@@ -94,20 +100,17 @@ def save_resume_to_drive(job_id: str, company: str, title: str,
 # ── Google Sheets — one tab per day ──────────────────────────────────────────
 
 def _get_or_create_tab(sheets, tab_name: str) -> int:
-    """Returns the sheetId for the tab, creating it if it doesn't exist."""
     meta = sheets.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
     for sheet in meta.get("sheets", []):
         if sheet["properties"]["title"] == tab_name:
             return sheet["properties"]["sheetId"]
 
-    # Create the tab
     result = sheets.spreadsheets().batchUpdate(
         spreadsheetId=SHEET_ID,
         body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]}
     ).execute()
     new_sheet_id = result["replies"][0]["addSheet"]["properties"]["sheetId"]
 
-    # Write headers on the new tab
     sheets.spreadsheets().values().update(
         spreadsheetId=SHEET_ID,
         range=f"'{tab_name}'!A1",
@@ -115,16 +118,11 @@ def _get_or_create_tab(sheets, tab_name: str) -> int:
         body={"values": [SHEET_HEADERS]}
     ).execute()
 
-    # Bold the header row
     sheets.spreadsheets().batchUpdate(
         spreadsheetId=SHEET_ID,
         body={"requests": [{
             "repeatCell": {
-                "range": {
-                    "sheetId": new_sheet_id,
-                    "startRowIndex": 0,
-                    "endRowIndex": 1
-                },
+                "range": {"sheetId": new_sheet_id, "startRowIndex": 0, "endRowIndex": 1},
                 "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
                 "fields": "userEnteredFormat.textFormat.bold"
             }
@@ -138,8 +136,6 @@ def _get_or_create_tab(sheets, tab_name: str) -> int:
 def log_job_to_sheet(job, relevance_data: dict, drive_url: str, cover_note: str):
     try:
         sheets = _sheets_service()
-
-        # Tab name = today's date, e.g. "14 Jun 2026"
         tab_name = datetime.utcnow().strftime("%-d %b %Y")
         _get_or_create_tab(sheets, tab_name)
 
@@ -154,11 +150,11 @@ def log_job_to_sheet(job, relevance_data: dict, drive_url: str, cover_note: str)
             relevance_data.get("score", ""),
             relevance_data.get("match_reasons", ""),
             job.url,
-            drive_url if drive_url else "See log",
+            drive_url if drive_url else "",
             cover_note[:300] if cover_note else "",
-            "New",   # Status — you update this manually
-            "",      # Applied Date
-            "",      # Notes
+            "New",
+            "",
+            "",
         ]
 
         sheets.spreadsheets().values().append(
@@ -168,12 +164,10 @@ def log_job_to_sheet(job, relevance_data: dict, drive_url: str, cover_note: str)
             insertDataOption="INSERT_ROWS",
             body={"values": [row]}
         ).execute()
-        log.info(f"Logged to Sheets [{tab_name}]: {job.title} @ {job.company}")
+        log.info(f"Logged [{tab_name}]: {job.title} @ {job.company}")
     except Exception as e:
         log.error(f"Sheets logging failed: {e}")
 
-
-# ── Notification (logged to console / GitHub Actions log) ────────────────────
 
 def send_notification_email(new_jobs: list, recipient: str):
     if not new_jobs:
@@ -182,7 +176,6 @@ def send_notification_email(new_jobs: list, recipient: str):
     for j in new_jobs:
         log.info(
             f"[{j.get('region','?')}] {j.get('title','?')} @ "
-            f"{j.get('company','?')} — Score: {j.get('score','?')}/100 — "
-            f"{j.get('url','')}"
+            f"{j.get('company','?')} — Score: {j.get('score','?')}/100"
         )
-    log.info(f"Check your sheet: https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit")
+    log.info(f"Sheet: https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit")
