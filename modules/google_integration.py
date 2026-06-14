@@ -83,7 +83,7 @@ def save_resume_to_drive(job_id: str, company: str, title: str,
         ).execute()
 
         url = created.get("webViewLink", "")
-        log.info(f"Resume saved to Drive: {filename}")
+        log.info(f"Resume saved to Drive: {filename} → {url}")
         return url
     except Exception as e:
         log.error(f"Drive upload failed: {e}")
