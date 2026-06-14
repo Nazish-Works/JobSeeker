@@ -1,9 +1,8 @@
 """
 modules/scraper.py
 Fetches job listings using:
-  - Adzuna API (India + Saudi) — free, official, no blocks
-  - Naukri.com (India) — works with proper headers
-  - Wellfound (India) — startup jobs
+  - Adzuna API (India + Saudi/Gulf) — free, official, no blocks
+  - Naukri.com (India) — scraper
 """
 
 import os
@@ -61,29 +60,28 @@ def _make_id(title: str, company: str, location: str) -> str:
 def _check_nationals_only(text: str) -> bool:
     flags = [
         "saudi nationals only", "saudi national only", "saudi citizen",
-        "saudization", "must be a saudi national", "Saudi nationals"
+        "saudization", "must be a saudi national", "saudi nationals"
     ]
-    text_lower = text.lower()
-    return any(flag.lower() in text_lower for flag in flags)
+    return any(flag.lower() in text.lower() for flag in flags)
 
 
-# ── Adzuna API (India) ────────────────────────────────────────────────────────
+# ── Adzuna API — India ────────────────────────────────────────────────────────
 
 def scrape_adzuna_india(keyword: str, location: str) -> list:
     jobs = []
     if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
-        log.warning("Adzuna credentials missing — skipping")
         return jobs
 
-    url = f"https://api.adzuna.com/v1/api/jobs/in/search/1"
+    # Fetch last 3 days to catch more jobs (not just 1 day)
+    url = "https://api.adzuna.com/v1/api/jobs/in/search/1"
     params = {
         "app_id": ADZUNA_APP_ID,
         "app_key": ADZUNA_APP_KEY,
-        "results_per_page": 20,
+        "results_per_page": 50,
         "what": keyword,
         "where": location,
         "sort_by": "date",
-        "max_days_old": 1,
+        "max_days_old": 3,
         "content-type": "application/json",
     }
 
@@ -118,54 +116,62 @@ def scrape_adzuna_india(keyword: str, location: str) -> list:
     return jobs
 
 
-# ── Adzuna API (Saudi Arabia) ─────────────────────────────────────────────────
+# ── Adzuna API — Saudi / Gulf ─────────────────────────────────────────────────
 
 def scrape_adzuna_saudi(keyword: str) -> list:
+    """
+    Adzuna supports these Gulf/Middle East country codes:
+    - 'gb' with location filter for Saudi Arabia / Middle East
+    - 'sg' sometimes picks up Gulf roles too
+    We search multiple pages to get more results.
+    """
     jobs = []
     if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
         return jobs
 
-    # Adzuna uses 'ae' (UAE) as the closest Gulf country code
-    # We filter for Saudi-related locations after fetching
-    for country_code in ["ae", "gb"]:
-        url = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
-        params = {
-            "app_id": ADZUNA_APP_ID,
-            "app_key": ADZUNA_APP_KEY,
-            "results_per_page": 20,
-            "what": keyword,
-            "where": "Saudi Arabia",
-            "sort_by": "date",
-            "max_days_old": 1,
-            "content-type": "application/json",
-        }
-        try:
-            r = requests.get(url, params=params, timeout=15)
-            r.raise_for_status()
-            data = r.json()
+    saudi_locations = ["Saudi Arabia", "Riyadh", "Jeddah", "Dammam"]
 
-            for item in data.get("results", []):
-                title   = item.get("title", "N/A")
-                company = item.get("company", {}).get("display_name", "N/A")
-                loc     = item.get("location", {}).get("display_name", "Saudi Arabia")
-                href    = item.get("redirect_url", "")
-                desc    = item.get("description", "")[:3000]
-                posted  = item.get("created", datetime.utcnow().strftime("%Y-%m-%d"))[:10]
-                nationals_only = _check_nationals_only(desc + title)
+    for location in saudi_locations:
+        for page in [1, 2]:
+            url = f"https://api.adzuna.com/v1/api/jobs/gb/search/{page}"
+            params = {
+                "app_id": ADZUNA_APP_ID,
+                "app_key": ADZUNA_APP_KEY,
+                "results_per_page": 20,
+                "what": keyword,
+                "where": location,
+                "sort_by": "date",
+                "max_days_old": 3,
+                "content-type": "application/json",
+            }
+            try:
+                r = requests.get(url, params=params, timeout=15)
+                r.raise_for_status()
+                data = r.json()
+                results = data.get("results", [])
 
-                jobs.append(Job(
-                    job_id=_make_id(title, company, loc),
-                    title=title, company=company, location=loc,
-                    region="Saudi", portal=f"adzuna_{country_code}",
-                    url=href, description=desc,
-                    posted_date=posted, salary=None,
-                    is_nationals_only=nationals_only,
-                    scraped_at=datetime.utcnow().isoformat(),
-                ))
-            log.info(f"Adzuna [{country_code}] '{keyword}': {len(data.get('results', []))} jobs")
-        except Exception as e:
-            log.error(f"Adzuna Saudi [{country_code}] error: {e}")
-        time.sleep(1)
+                for item in results:
+                    title   = item.get("title", "N/A")
+                    company = item.get("company", {}).get("display_name", "N/A")
+                    loc     = item.get("location", {}).get("display_name", location)
+                    href    = item.get("redirect_url", "")
+                    desc    = item.get("description", "")[:3000]
+                    posted  = item.get("created", datetime.utcnow().strftime("%Y-%m-%d"))[:10]
+                    nationals_only = _check_nationals_only(desc + title)
+
+                    jobs.append(Job(
+                        job_id=_make_id(title, company, loc),
+                        title=title, company=company, location=loc,
+                        region="Saudi", portal="adzuna_gulf",
+                        url=href, description=desc,
+                        posted_date=posted, salary=None,
+                        is_nationals_only=nationals_only,
+                        scraped_at=datetime.utcnow().isoformat(),
+                    ))
+                log.info(f"Adzuna Gulf [{location}] p{page} '{keyword}': {len(results)} jobs")
+            except Exception as e:
+                log.error(f"Adzuna Gulf [{location}] error: {e}")
+            time.sleep(0.5)
 
     return jobs
 
@@ -184,7 +190,7 @@ def scrape_naukri(keyword: str, location: str) -> list:
         soup = BeautifulSoup(r.text, "html.parser")
         cards = soup.select("article.jobTuple, div.srp-jobtuple-wrapper, div[class*='jobTuple']")
 
-        for card in cards[:15]:
+        for card in cards[:20]:
             try:
                 title_el  = card.select_one("a.title, a.jobTitle, a[class*='title']")
                 comp_el   = card.select_one("a.subTitle, a.companyInfo, a[class*='comp']")
@@ -197,77 +203,22 @@ def scrape_naukri(keyword: str, location: str) -> list:
                 salary  = salary_el.get_text(strip=True)if salary_el else None
                 href    = title_el.get("href", url)     if title_el else url
 
-                # Get description from job page
-                desc = ""
-                try:
-                    jr = requests.get(href, headers=HEADERS, timeout=10)
-                    jr.raise_for_status()
-                    jsoup = BeautifulSoup(jr.text, "html.parser")
-                    jd_el = jsoup.select_one("div.job-desc, section.job-desc, div[class*='jobDesc']")
-                    desc  = jd_el.get_text(" ", strip=True)[:3000] if jd_el else ""
-                except Exception:
-                    pass
-
                 jobs.append(Job(
                     job_id=_make_id(title, company, loc),
                     title=title, company=company, location=loc,
                     region="India", portal="naukri",
-                    url=href, description=desc,
+                    url=href, description="",
                     posted_date=datetime.utcnow().strftime("%Y-%m-%d"),
                     salary=salary, is_nationals_only=False,
                     scraped_at=datetime.utcnow().isoformat(),
                 ))
-                time.sleep(0.5)
+                time.sleep(0.3)
             except Exception as e:
                 log.error(f"Naukri card error: {e}")
 
         log.info(f"Naukri [{location}] '{keyword}': {len(jobs)} jobs")
     except Exception as e:
-        log.error(f"Naukri scrape error for {url}: {e}")
-    return jobs
-
-
-# ── Wellfound (India startups) ────────────────────────────────────────────────
-
-def scrape_wellfound(keyword: str) -> list:
-    jobs = []
-    slug = keyword.replace(" ", "-").lower()
-    url  = f"https://wellfound.com/jobs/l/india/{slug}"
-
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-        cards = soup.select("div[class*='JobListing'], div[class*='job-listing']")
-
-        for card in cards[:15]:
-            try:
-                title_el = card.select_one("a[class*='title'], h2 a")
-                comp_el  = card.select_one("a[class*='company'], span[class*='company']")
-                loc_el   = card.select_one("span[class*='location'], div[class*='location']")
-
-                title   = title_el.get_text(strip=True) if title_el else "N/A"
-                company = comp_el.get_text(strip=True)  if comp_el  else "N/A"
-                loc     = loc_el.get_text(strip=True)   if loc_el   else "India"
-                href    = title_el.get("href", "")      if title_el else ""
-                if href and href.startswith("/"):
-                    href = "https://wellfound.com" + href
-
-                jobs.append(Job(
-                    job_id=_make_id(title, company, loc),
-                    title=title, company=company, location=loc,
-                    region="India", portal="wellfound",
-                    url=href, description="",
-                    posted_date=datetime.utcnow().strftime("%Y-%m-%d"),
-                    salary=None, is_nationals_only=False,
-                    scraped_at=datetime.utcnow().isoformat(),
-                ))
-            except Exception as e:
-                log.error(f"Wellfound card error: {e}")
-
-        log.info(f"Wellfound '{keyword}': {len(jobs)} jobs")
-    except Exception as e:
-        log.error(f"Wellfound error: {e}")
+        log.error(f"Naukri error for {url}: {e}")
     return jobs
 
 
@@ -279,23 +230,22 @@ def run_all_scrapers(keywords: list, india_cities: list, saudi_cities: list) -> 
     for keyword in keywords:
         log.info(f"Scanning keyword: '{keyword}'")
 
-        # India — Adzuna API (primary, reliable)
+        # Saudi FIRST — prioritised as requested
+        log.info(f"  → Saudi scan for '{keyword}'")
+        all_jobs += scrape_adzuna_saudi(keyword)
+        time.sleep(1)
+
+        # India — Adzuna API
         for city in india_cities:
             all_jobs += scrape_adzuna_india(keyword, city)
-            time.sleep(1)
+            time.sleep(0.5)
 
-        # India — Naukri (backup scraper)
+        # India — Naukri backup
         for city in ["Bengaluru", "Mumbai", "Pune", "Hyderabad"]:
             all_jobs += scrape_naukri(keyword, city)
-            time.sleep(1)
+            time.sleep(0.5)
 
-        # India — Wellfound startups
-        all_jobs += scrape_wellfound(keyword)
-
-        # Saudi — Adzuna API
-        all_jobs += scrape_adzuna_saudi(keyword)
-
-        time.sleep(2)
+        time.sleep(1)
 
     log.info(f"Total jobs scraped (before dedup): {len(all_jobs)}")
     return all_jobs
