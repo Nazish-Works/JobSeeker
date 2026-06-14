@@ -14,7 +14,6 @@ on:
     - cron: "0 15 * * *"
     - cron: "0 19 * * *"
 
-  # Allow manual trigger from GitHub Actions UI
   workflow_dispatch:
 
 jobs:
@@ -34,8 +33,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Restore the seen_jobs.json and token.json from previous runs
-      # so we don't re-process already-seen jobs or re-authenticate
       - name: Restore cached data
         uses: actions/cache@v4
         with:
@@ -62,14 +59,8 @@ jobs:
         if: failure()
         env:
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
-        run: |
-          python -c "
-from modules.notifier import notify
-notify([], status='failure')
-print('Failure notification sent')
-          "
+        run: python -c "from modules.notifier import notify; notify([], status='failure')"
 
-      # Save updated state so next run picks up where this one left off
       - name: Save state cache
         uses: actions/cache/save@v4
         if: always()
