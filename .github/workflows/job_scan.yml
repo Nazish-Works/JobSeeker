@@ -58,6 +58,17 @@ jobs:
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
         run: python main.py
 
+      - name: Notify on failure
+        if: failure()
+        env:
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+        run: |
+          python -c "
+from modules.notifier import notify
+notify([], status='failure')
+print('Failure notification sent')
+          "
+
       # Save updated state so next run picks up where this one left off
       - name: Save state cache
         uses: actions/cache/save@v4
