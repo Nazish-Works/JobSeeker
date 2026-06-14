@@ -1,9 +1,12 @@
 """
 modules/scraper.py
-Fetches job listings from Indeed India, Naukri, Wellfound, Bayt,
-GulfTalent, NaukriGulf, and Indeed Saudi.
+Fetches job listings using:
+  - Adzuna API (India + Saudi) — free, official, no blocks
+  - Naukri.com (India) — works with proper headers
+  - Wellfound (India) — startup jobs
 """
 
+import os
 import time
 import json
 import logging
@@ -17,6 +20,9 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
+ADZUNA_APP_ID  = os.environ.get("ADZUNA_APP_ID", "")
+ADZUNA_APP_KEY = os.environ.get("ADZUNA_APP_KEY", "")
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -24,11 +30,13 @@ HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
+
 
 @dataclass
 class Job:
-    job_id: str           # stable hash of title+company+location
+    job_id: str
     title: str
     company: str
     location: str
@@ -50,288 +58,243 @@ def _make_id(title: str, company: str, location: str) -> str:
     return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
-def _get(url: str, params: dict = None, retries: int = 3) -> Optional[BeautifulSoup]:
-    for attempt in range(retries):
-        try:
-            r = requests.get(url, headers=HEADERS, params=params, timeout=15)
-            r.raise_for_status()
-            return BeautifulSoup(r.text, "html.parser")
-        except Exception as e:
-            log.warning(f"Attempt {attempt+1} failed for {url}: {e}")
-            time.sleep(2 ** attempt)
-    return None
+def _check_nationals_only(text: str) -> bool:
+    flags = [
+        "saudi nationals only", "saudi national only", "saudi citizen",
+        "saudization", "must be a saudi national", "Saudi nationals"
+    ]
+    text_lower = text.lower()
+    return any(flag.lower() in text_lower for flag in flags)
 
 
-# ── Indeed (India + Saudi) ────────────────────────────────────────────────────
+# ── Adzuna API (India) ────────────────────────────────────────────────────────
 
-def scrape_indeed(keyword: str, location: str, region: str, base_url: str) -> list[Job]:
+def scrape_adzuna_india(keyword: str, location: str) -> list:
     jobs = []
-    params = {"q": keyword, "l": location, "sort": "date", "fromage": "1"}
-    soup = _get(base_url, params)
-    if not soup:
+    if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
+        log.warning("Adzuna credentials missing — skipping")
         return jobs
 
-    cards = soup.select("div.job_seen_beacon, div.jobsearch-SerpJobCard")
-    for card in cards:
-        try:
-            title_el  = card.select_one("h2.jobTitle span, h2 a span")
-            comp_el   = card.select_one("span.companyName, [data-testid='company-name']")
-            loc_el    = card.select_one("div.companyLocation, [data-testid='text-location']")
-            link_el   = card.select_one("h2 a")
-            salary_el = card.select_one("div.metadata.salary-snippet-container, div.salaryOnly")
+    url = f"https://api.adzuna.com/v1/api/jobs/in/search/1"
+    params = {
+        "app_id": ADZUNA_APP_ID,
+        "app_key": ADZUNA_APP_KEY,
+        "results_per_page": 20,
+        "what": keyword,
+        "where": location,
+        "sort_by": "date",
+        "max_days_old": 1,
+        "content-type": "application/json",
+    }
 
-            title    = title_el.get_text(strip=True)  if title_el  else "N/A"
-            company  = comp_el.get_text(strip=True)   if comp_el   else "N/A"
-            loc      = loc_el.get_text(strip=True)    if loc_el    else location
-            salary   = salary_el.get_text(strip=True) if salary_el else None
-            href     = "https://www.indeed.com" + link_el["href"] if link_el else base_url
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
 
-            desc_soup = _get(href)
-            description = ""
-            if desc_soup:
-                jd_el = desc_soup.select_one("div#jobDescriptionText, div.jobsearch-jobDescriptionText")
-                description = jd_el.get_text(" ", strip=True)[:3000] if jd_el else ""
-
-            nationals_only = _check_nationals_only(description + title)
+        for item in data.get("results", []):
+            title    = item.get("title", "N/A")
+            company  = item.get("company", {}).get("display_name", "N/A")
+            loc      = item.get("location", {}).get("display_name", location)
+            href     = item.get("redirect_url", "")
+            desc     = item.get("description", "")[:3000]
+            salary_min = item.get("salary_min")
+            salary_max = item.get("salary_max")
+            salary   = f"{salary_min}–{salary_max}" if salary_min else None
+            posted   = item.get("created", datetime.utcnow().strftime("%Y-%m-%d"))[:10]
 
             jobs.append(Job(
                 job_id=_make_id(title, company, loc),
                 title=title, company=company, location=loc,
-                region=region, portal=f"indeed_{region.lower()}",
-                url=href, description=description,
-                posted_date=datetime.utcnow().strftime("%Y-%m-%d"),
-                salary=salary, is_nationals_only=nationals_only,
+                region="India", portal="adzuna_india",
+                url=href, description=desc,
+                posted_date=posted, salary=salary,
+                is_nationals_only=False,
                 scraped_at=datetime.utcnow().isoformat(),
             ))
-            time.sleep(1)
+        log.info(f"Adzuna India [{location}] '{keyword}': {len(jobs)} jobs")
+    except Exception as e:
+        log.error(f"Adzuna India error: {e}")
+    return jobs
+
+
+# ── Adzuna API (Saudi Arabia) ─────────────────────────────────────────────────
+
+def scrape_adzuna_saudi(keyword: str) -> list:
+    jobs = []
+    if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
+        return jobs
+
+    # Adzuna uses 'ae' (UAE) as the closest Gulf country code
+    # We filter for Saudi-related locations after fetching
+    for country_code in ["ae", "gb"]:
+        url = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
+        params = {
+            "app_id": ADZUNA_APP_ID,
+            "app_key": ADZUNA_APP_KEY,
+            "results_per_page": 20,
+            "what": keyword,
+            "where": "Saudi Arabia",
+            "sort_by": "date",
+            "max_days_old": 1,
+            "content-type": "application/json",
+        }
+        try:
+            r = requests.get(url, params=params, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+
+            for item in data.get("results", []):
+                title   = item.get("title", "N/A")
+                company = item.get("company", {}).get("display_name", "N/A")
+                loc     = item.get("location", {}).get("display_name", "Saudi Arabia")
+                href    = item.get("redirect_url", "")
+                desc    = item.get("description", "")[:3000]
+                posted  = item.get("created", datetime.utcnow().strftime("%Y-%m-%d"))[:10]
+                nationals_only = _check_nationals_only(desc + title)
+
+                jobs.append(Job(
+                    job_id=_make_id(title, company, loc),
+                    title=title, company=company, location=loc,
+                    region="Saudi", portal=f"adzuna_{country_code}",
+                    url=href, description=desc,
+                    posted_date=posted, salary=None,
+                    is_nationals_only=nationals_only,
+                    scraped_at=datetime.utcnow().isoformat(),
+                ))
+            log.info(f"Adzuna [{country_code}] '{keyword}': {len(data.get('results', []))} jobs")
         except Exception as e:
-            log.error(f"Indeed card parse error: {e}")
+            log.error(f"Adzuna Saudi [{country_code}] error: {e}")
+        time.sleep(1)
+
     return jobs
 
 
 # ── Naukri (India) ────────────────────────────────────────────────────────────
 
-def scrape_naukri(keyword: str, location: str) -> list[Job]:
+def scrape_naukri(keyword: str, location: str) -> list:
     jobs = []
     slug_kw  = keyword.replace(" ", "-").lower()
     slug_loc = location.replace(" ", "-").lower()
     url = f"https://www.naukri.com/{slug_kw}-jobs-in-{slug_loc}"
-    soup = _get(url)
-    if not soup:
-        return jobs
 
-    cards = soup.select("article.jobTuple, div.srp-jobtuple-wrapper")
-    for card in cards:
-        try:
-            title_el  = card.select_one("a.title, a.jobTitle")
-            comp_el   = card.select_one("a.subTitle, a.companyInfo")
-            loc_el    = card.select_one("li.location span, span.locWdth")
-            salary_el = card.select_one("li.salary span, span.salary")
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+        cards = soup.select("article.jobTuple, div.srp-jobtuple-wrapper, div[class*='jobTuple']")
 
-            title   = title_el.get_text(strip=True) if title_el else "N/A"
-            company = comp_el.get_text(strip=True)  if comp_el  else "N/A"
-            loc     = loc_el.get_text(strip=True)   if loc_el   else location
-            salary  = salary_el.get_text(strip=True)if salary_el else None
-            href    = title_el["href"] if title_el and title_el.get("href") else url
+        for card in cards[:15]:
+            try:
+                title_el  = card.select_one("a.title, a.jobTitle, a[class*='title']")
+                comp_el   = card.select_one("a.subTitle, a.companyInfo, a[class*='comp']")
+                loc_el    = card.select_one("li.location span, span.locWdth, span[class*='loc']")
+                salary_el = card.select_one("li.salary span, span[class*='salary']")
 
-            desc_soup = _get(href)
-            description = ""
-            if desc_soup:
-                jd_el = desc_soup.select_one("div.job-desc, section.job-desc")
-                description = jd_el.get_text(" ", strip=True)[:3000] if jd_el else ""
+                title   = title_el.get_text(strip=True) if title_el else "N/A"
+                company = comp_el.get_text(strip=True)  if comp_el  else "N/A"
+                loc     = loc_el.get_text(strip=True)   if loc_el   else location
+                salary  = salary_el.get_text(strip=True)if salary_el else None
+                href    = title_el.get("href", url)     if title_el else url
 
-            jobs.append(Job(
-                job_id=_make_id(title, company, loc),
-                title=title, company=company, location=loc,
-                region="India", portal="naukri",
-                url=href, description=description,
-                posted_date=datetime.utcnow().strftime("%Y-%m-%d"),
-                salary=salary, is_nationals_only=False,
-                scraped_at=datetime.utcnow().isoformat(),
-            ))
-            time.sleep(1)
-        except Exception as e:
-            log.error(f"Naukri card parse error: {e}")
+                # Get description from job page
+                desc = ""
+                try:
+                    jr = requests.get(href, headers=HEADERS, timeout=10)
+                    jr.raise_for_status()
+                    jsoup = BeautifulSoup(jr.text, "html.parser")
+                    jd_el = jsoup.select_one("div.job-desc, section.job-desc, div[class*='jobDesc']")
+                    desc  = jd_el.get_text(" ", strip=True)[:3000] if jd_el else ""
+                except Exception:
+                    pass
+
+                jobs.append(Job(
+                    job_id=_make_id(title, company, loc),
+                    title=title, company=company, location=loc,
+                    region="India", portal="naukri",
+                    url=href, description=desc,
+                    posted_date=datetime.utcnow().strftime("%Y-%m-%d"),
+                    salary=salary, is_nationals_only=False,
+                    scraped_at=datetime.utcnow().isoformat(),
+                ))
+                time.sleep(0.5)
+            except Exception as e:
+                log.error(f"Naukri card error: {e}")
+
+        log.info(f"Naukri [{location}] '{keyword}': {len(jobs)} jobs")
+    except Exception as e:
+        log.error(f"Naukri scrape error for {url}: {e}")
     return jobs
 
 
-# ── NaukriGulf (Saudi) ────────────────────────────────────────────────────────
+# ── Wellfound (India startups) ────────────────────────────────────────────────
 
-def scrape_naukrigulf(keyword: str) -> list[Job]:
+def scrape_wellfound(keyword: str) -> list:
     jobs = []
     slug = keyword.replace(" ", "-").lower()
-    url  = f"https://www.naukrigulf.com/{slug}-jobs-in-saudi-arabia"
-    soup = _get(url)
-    if not soup:
-        return jobs
+    url  = f"https://wellfound.com/jobs/l/india/{slug}"
 
-    cards = soup.select("div.ni-job-tuple, li.jobTuple")
-    for card in cards:
-        try:
-            title_el = card.select_one("a.designation, a.jobTitle")
-            comp_el  = card.select_one("a.company-name, span.comp-name")
-            loc_el   = card.select_one("span.location, li.location")
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+        cards = soup.select("div[class*='JobListing'], div[class*='job-listing']")
 
-            title   = title_el.get_text(strip=True) if title_el else "N/A"
-            company = comp_el.get_text(strip=True)  if comp_el  else "N/A"
-            loc     = loc_el.get_text(strip=True)   if loc_el   else "Saudi Arabia"
-            href    = title_el["href"] if title_el and title_el.get("href") else url
-            if href.startswith("/"):
-                href = "https://www.naukrigulf.com" + href
+        for card in cards[:15]:
+            try:
+                title_el = card.select_one("a[class*='title'], h2 a")
+                comp_el  = card.select_one("a[class*='company'], span[class*='company']")
+                loc_el   = card.select_one("span[class*='location'], div[class*='location']")
 
-            desc_soup = _get(href)
-            description = ""
-            if desc_soup:
-                jd_el = desc_soup.select_one("div.job-description-main, div#job-description")
-                description = jd_el.get_text(" ", strip=True)[:3000] if jd_el else ""
+                title   = title_el.get_text(strip=True) if title_el else "N/A"
+                company = comp_el.get_text(strip=True)  if comp_el  else "N/A"
+                loc     = loc_el.get_text(strip=True)   if loc_el   else "India"
+                href    = title_el.get("href", "")      if title_el else ""
+                if href and href.startswith("/"):
+                    href = "https://wellfound.com" + href
 
-            nationals_only = _check_nationals_only(description + title)
+                jobs.append(Job(
+                    job_id=_make_id(title, company, loc),
+                    title=title, company=company, location=loc,
+                    region="India", portal="wellfound",
+                    url=href, description="",
+                    posted_date=datetime.utcnow().strftime("%Y-%m-%d"),
+                    salary=None, is_nationals_only=False,
+                    scraped_at=datetime.utcnow().isoformat(),
+                ))
+            except Exception as e:
+                log.error(f"Wellfound card error: {e}")
 
-            jobs.append(Job(
-                job_id=_make_id(title, company, loc),
-                title=title, company=company, location=loc,
-                region="Saudi", portal="naukrigulf",
-                url=href, description=description,
-                posted_date=datetime.utcnow().strftime("%Y-%m-%d"),
-                salary=None, is_nationals_only=nationals_only,
-                scraped_at=datetime.utcnow().isoformat(),
-            ))
-            time.sleep(1)
-        except Exception as e:
-            log.error(f"NaukriGulf card parse error: {e}")
+        log.info(f"Wellfound '{keyword}': {len(jobs)} jobs")
+    except Exception as e:
+        log.error(f"Wellfound error: {e}")
     return jobs
 
 
-# ── Bayt (Saudi) ──────────────────────────────────────────────────────────────
+# ── Main entry point ──────────────────────────────────────────────────────────
 
-def scrape_bayt(keyword: str) -> list[Job]:
-    jobs = []
-    slug = keyword.replace(" ", "-").lower()
-    url  = f"https://www.bayt.com/en/saudi-arabia/jobs/{slug}-jobs/"
-    soup = _get(url)
-    if not soup:
-        return jobs
-
-    cards = soup.select("li[data-js-job], div.has-pointer-d")
-    for card in cards:
-        try:
-            title_el = card.select_one("h2.jb-title a, a[data-automation-id='job-title']")
-            comp_el  = card.select_one("span[data-automation-id='company-name'], b.jb-company")
-            loc_el   = card.select_one("span[data-automation-id='job-location'], span.jb-loc")
-
-            title   = title_el.get_text(strip=True) if title_el else "N/A"
-            company = comp_el.get_text(strip=True)  if comp_el  else "N/A"
-            loc     = loc_el.get_text(strip=True)   if loc_el   else "Saudi Arabia"
-            href    = title_el["href"] if title_el and title_el.get("href") else url
-            if href.startswith("/"):
-                href = "https://www.bayt.com" + href
-
-            desc_soup = _get(href)
-            description = ""
-            if desc_soup:
-                jd_el = desc_soup.select_one("div.jb-description, div[data-automation-id='job-description']")
-                description = jd_el.get_text(" ", strip=True)[:3000] if jd_el else ""
-
-            nationals_only = _check_nationals_only(description + title)
-
-            jobs.append(Job(
-                job_id=_make_id(title, company, loc),
-                title=title, company=company, location=loc,
-                region="Saudi", portal="bayt",
-                url=href, description=description,
-                posted_date=datetime.utcnow().strftime("%Y-%m-%d"),
-                salary=None, is_nationals_only=nationals_only,
-                scraped_at=datetime.utcnow().isoformat(),
-            ))
-            time.sleep(1)
-        except Exception as e:
-            log.error(f"Bayt card parse error: {e}")
-    return jobs
-
-
-# ── GulfTalent (Saudi) ────────────────────────────────────────────────────────
-
-def scrape_gulftalent(keyword: str) -> list[Job]:
-    jobs = []
-    slug = keyword.replace(" ", "-").lower()
-    url  = f"https://www.gulftalent.com/saudi-arabia/jobs/{slug}"
-    soup = _get(url)
-    if not soup:
-        return jobs
-
-    cards = soup.select("div.job_listing, article.job-listing")
-    for card in cards:
-        try:
-            title_el = card.select_one("h3 a, h2 a")
-            comp_el  = card.select_one("span.company, div.company-name")
-            loc_el   = card.select_one("span.location, div.job-location")
-
-            title   = title_el.get_text(strip=True) if title_el else "N/A"
-            company = comp_el.get_text(strip=True)  if comp_el  else "N/A"
-            loc     = loc_el.get_text(strip=True)   if loc_el   else "Saudi Arabia"
-            href    = title_el["href"] if title_el and title_el.get("href") else url
-
-            desc_soup = _get(href)
-            description = ""
-            if desc_soup:
-                jd_el = desc_soup.select_one("div.job-description, section.jd-text")
-                description = jd_el.get_text(" ", strip=True)[:3000] if jd_el else ""
-
-            nationals_only = _check_nationals_only(description + title)
-
-            jobs.append(Job(
-                job_id=_make_id(title, company, loc),
-                title=title, company=company, location=loc,
-                region="Saudi", portal="gulftalent",
-                url=href, description=description,
-                posted_date=datetime.utcnow().strftime("%Y-%m-%d"),
-                salary=None, is_nationals_only=nationals_only,
-                scraped_at=datetime.utcnow().isoformat(),
-            ))
-            time.sleep(1)
-        except Exception as e:
-            log.error(f"GulfTalent card parse error: {e}")
-    return jobs
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _check_nationals_only(text: str) -> bool:
-    """Returns True if the role appears to require Saudi nationals only."""
-    flags = [
-        "saudi nationals only", "saudi national only", "saudi citizen",
-        "حاملي الجنسية السعودية", "للمواطنين السعوديين", "saudization",
-        "must be a saudi national"
-    ]
-    text_lower = text.lower()
-    return any(flag in text_lower for flag in flags)
-
-
-def run_all_scrapers(keywords: list[str],
-                     india_cities: list[str],
-                     saudi_cities: list[str]) -> list[Job]:
-    """Entry point — runs all enabled scrapers and returns a flat list of jobs."""
+def run_all_scrapers(keywords: list, india_cities: list, saudi_cities: list) -> list:
     all_jobs = []
 
     for keyword in keywords:
         log.info(f"Scanning keyword: '{keyword}'")
 
-        # India portals — Bengaluru first (home city), then other preferred cities
+        # India — Adzuna API (primary, reliable)
         for city in india_cities:
-            all_jobs += scrape_indeed(keyword, city, "India", "https://www.indeed.co.in/jobs")
-            # Naukri lists it as both "Bangalore" and "Bengaluru" — scrape both
-            all_jobs += scrape_naukri(keyword, city)
-            if city.lower() in ("bengaluru", "bangalore"):
-                # Scrape the alternate spelling too to catch all listings
-                alt = "Bangalore" if city.lower() == "bengaluru" else "Bengaluru"
-                all_jobs += scrape_naukri(keyword, alt)
-            time.sleep(2)
+            all_jobs += scrape_adzuna_india(keyword, city)
+            time.sleep(1)
 
-        # Saudi portals
-        all_jobs += scrape_indeed(keyword, "Saudi Arabia", "Saudi", "https://sa.indeed.com/jobs")
-        all_jobs += scrape_naukrigulf(keyword)
-        all_jobs += scrape_bayt(keyword)
-        all_jobs += scrape_gulftalent(keyword)
+        # India — Naukri (backup scraper)
+        for city in ["Bengaluru", "Mumbai", "Pune", "Hyderabad"]:
+            all_jobs += scrape_naukri(keyword, city)
+            time.sleep(1)
+
+        # India — Wellfound startups
+        all_jobs += scrape_wellfound(keyword)
+
+        # Saudi — Adzuna API
+        all_jobs += scrape_adzuna_saudi(keyword)
+
         time.sleep(2)
 
     log.info(f"Total jobs scraped (before dedup): {len(all_jobs)}")
