@@ -36,9 +36,14 @@ from config.config import (
 from modules.scraper        import run_all_scrapers, Job
 from modules.deduplicator   import SeenJobsStore
 from modules.ai_processor   import score_relevance, tailor_resume, generate_cover_note
+from modules.notifier import notify
 from modules.google_integration import (
     save_resume_to_drive, log_job_to_sheet, send_notification_email
 )
+
+# Create folders BEFORE logging setup
+os.makedirs("data",    exist_ok=True)
+os.makedirs("resumes", exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -119,10 +124,10 @@ def run():
 
     log.info(f"After filters: {len(filtered)} jobs to score")
 
-    # Limit to 100 per run — 5 scans/day means up to 500 jobs processed daily
-    if len(filtered) > 100:
-        log.info(f"Limiting to 100 jobs this run (will process rest next scan)")
-        filtered = filtered[:100]
+    # Limit to 50 per run to finish within 10 mins — 5 scans/day = 250 jobs/day
+    if len(filtered) > 50:
+        log.info(f"Limiting to 50 jobs this run (will process rest next scan)")
+        filtered = filtered[:50]
 
     if not filtered:
         log.info("No new qualifying jobs this run. Exiting.")
@@ -179,9 +184,9 @@ def run():
 
         log.info(f"  Done → Drive: {drive_url[:60]}...")
 
-    # ── Step 9: Notify ────────────────────────────────────────────────────────
+    # ── Step 9: Notify (email + WhatsApp) ───────────────────────────────────────
+    notify(notif_list, status="success")
     if notif_list:
-        send_notification_email(notif_list, NOTIFY_EMAIL)
         log.info(f"Scan complete. {len(notif_list)} matches found and saved.")
     else:
         log.info("Scan complete. No new matches above threshold.")
