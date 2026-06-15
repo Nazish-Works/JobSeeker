@@ -17,6 +17,12 @@ from googleapiclient.http import MediaIoBaseUpload
 
 log = logging.getLogger(__name__)
 
+def _now_ist():
+    """Returns current datetime in IST (UTC+5:30)."""
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    return datetime.now(IST)
+
 SCOPES = [
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/spreadsheets",
@@ -67,7 +73,7 @@ def save_resume_to_drive(job_id: str, company: str, title: str,
     try:
         drive = _drive_service()
 
-        date_str   = datetime.utcnow().strftime("%d %b %Y")
+        date_str   = _now_ist().strftime("%d %b %Y")
         safe_co    = company.replace("/", "-").replace("\\", "-").strip()[:40]
         safe_title = title.replace("/", "-").replace("\\", "-").strip()[:50]
         filename   = f"{date_str} — {safe_title} — {safe_co} [{region}].txt"
@@ -136,11 +142,11 @@ def _get_or_create_tab(sheets, tab_name: str) -> int:
 def log_job_to_sheet(job, relevance_data: dict, drive_url: str, cover_note: str):
     try:
         sheets = _sheets_service()
-        tab_name = datetime.utcnow().strftime("%-d %b %Y")
+        tab_name = _now_ist().strftime("%-d %b %Y")
         _get_or_create_tab(sheets, tab_name)
 
         row = [
-            datetime.utcnow().strftime("%H:%M UTC"),
+            _now_ist().strftime("%H:%M IST"),
             job.job_id,
             job.portal,
             job.region,
