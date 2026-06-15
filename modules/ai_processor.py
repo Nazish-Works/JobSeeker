@@ -96,20 +96,26 @@ def score_relevance(job: Job) -> dict:
     score 0–100. Jobs below config threshold are skipped.
     """
     prompt = f"""
-You are a job-fit evaluator. Given the candidate profile and a job description,
-return ONLY valid JSON with this exact structure (no markdown, no explanation):
+You are a senior recruiter evaluating candidate fit. Return ONLY valid JSON,
+no markdown, no explanation, no code fences.
+
+Return exactly this structure:
 {{
   "score": <integer 0-100>,
-  "match_reasons": "<2-3 sentence summary of why this is or isn't a good fit>",
-  "missing_skills": ["skill1", "skill2"],
-  "recommended_highlights": ["bullet or skill to emphasise for this JD"]
+  "match_reasons": "<2-3 specific sentences about fit — mention actual skills/tools that match>",
+  "missing_skills": ["only list genuine gaps, not minor ones"],
+  "recommended_highlights": ["specific experience or achievement to lead with for THIS job"]
 }}
 
-Scoring guide:
-- 80–100: Strong match (title, stack, seniority all align)
-- 60–79: Good match (most skills match, minor gaps)
-- 40–59: Partial match (some relevant experience but key gaps)
-- Below 40: Poor fit
+Scoring:
+- 80–100: Strong match (title, stack, seniority all align well)
+- 65–79: Good match (most skills match, minor gaps)
+- 40–64: Partial match (some relevant experience, notable gaps)
+- Below 40: Poor fit — don't waste her time
+
+Be honest and specific. If the JD asks for Tableau and she has ThoughtSpot,
+note it but don't penalise heavily (transferable). If it asks for 10 years and
+she has 5, note the gap.
 
 CANDIDATE PROFILE:
 {PROFILE_SUMMARY}
@@ -159,14 +165,23 @@ IMPORTANT FOR INDIA ROLE:
 """
 
     prompt = f"""
-You are an expert resume writer. Rewrite Nazish Mehdi's resume bullet points
-to maximise fit for the job below. Keep all facts 100% accurate — do not invent
-experience or skills she doesn't have. Only reorder, rephrase, and emphasise
-what's most relevant to this JD.
+You are a professional resume writer with 15 years of experience. Your task is to tailor
+Nazish Mehdi's resume for a specific job. Write like a human expert, not an AI.
 
-OUTPUT FORMAT: Return the complete tailored resume as plain text.
-Structure: Professional Summary → Technical Skills → Professional Experience
-(most relevant bullets first) → Core Competencies → Certifications → Education
+STRICT RULES — FOLLOW THESE EXACTLY:
+1. NEVER use these overused AI words: "spearheaded", "leveraged", "orchestrated",
+   "synergized", "utilized", "robust", "cutting-edge", "dynamic", "streamlined",
+   "transformative", "innovative", "passionate", "results-driven"
+2. Use SIMPLE, DIRECT language — write how a confident professional talks
+3. Keep ALL real numbers and achievements (100B rows, 50+ customers, etc.) — these are gold
+4. Only reorder and rephrase — NEVER invent skills or experience she doesn't have
+5. Mirror the JD's language naturally — if the JD says "data pipeline", use "data pipeline"
+6. Make changes SUBTLE — it should read like SHE wrote it, not a resume bot
+7. Start bullet points with strong past-tense verbs: Built, Designed, Led, Reduced, Improved
+
+OUTPUT FORMAT: Plain text resume in this order:
+Professional Summary (3 lines max, punchy) → Technical Skills → Professional Experience
+→ Core Competencies → Certifications → Education
 
 JOB DETAILS:
 Title: {job.title}
@@ -174,21 +189,21 @@ Company: {job.company}
 Location: {job.location}, {job.region}
 Description: {job.description[:2500]}
 
-KEY SKILLS TO EMPHASISE FOR THIS ROLE:
-{highlights if highlights else "Focus on Python, SQL, cloud data platforms"}
+PRIORITISE THESE SKILLS FOR THIS ROLE:
+{highlights if highlights else "Python, SQL, cloud data platforms"}
 
-SKILLS MENTIONED IN JD BUT GAPS:
-{missing if missing else "None identified"}
+GAPS TO ACKNOWLEDGE HONESTLY:
+{missing if missing else "None — strong match"}
 
 {region_note}
 
-ORIGINAL RESUME CONTENT:
+NAZISH'S ACTUAL EXPERIENCE (use this as the base — do not change facts):
 {BASE_RESUME_BULLETS}
 
-CANDIDATE CONTACT:
+CONTACT:
 Nazish Mehdi | nazishmehdi26@gmail.com | +917349328590
 LinkedIn: https://www.linkedin.com/in/nazishmehdi-80b0a5188/
-Passport: Z6029437 | Notice Period: 30 days
+Notice Period: 30 days
 """
     try:
         return _call_gemini(prompt, max_tokens=2000)
@@ -202,14 +217,28 @@ Passport: Z6029437 | Notice Period: 30 days
 def generate_cover_note(job: Job, relevance_data: dict) -> str:
     """Generates a short 3-paragraph cover note for the application."""
     prompt = f"""
-Write a concise, confident 3-paragraph cover note (not a full letter, just the body)
-for Nazish Mehdi applying to this role. Tone: professional but not stiff.
-Avoid generic phrases like "I am writing to express my interest."
-Start with the most compelling match point.
+Write a short, human cover note (3 paragraphs) for Nazish Mehdi applying to this role.
+
+TONE GUIDE:
+- Write like a real person, not a corporate robot
+- Confident but not arrogant
+- Specific — mention the company by name, reference something real from the JD
+- NO clichés: "I am writing to express my interest", "I am a passionate professional",
+  "I would be a great fit", "Please find attached", "I look forward to hearing from you"
+- DO NOT start with "I" — start with something engaging
+
+STRUCTURE:
+Para 1: Lead with your strongest match point — make them want to read on
+Para 2: One specific achievement from her experience that directly maps to their need
+Para 3: One sentence on why THIS company specifically, then a confident close
 
 JOB: {job.title} at {job.company}, {job.location}
 WHY SHE FITS: {relevance_data.get('match_reasons', '')}
-JD HIGHLIGHTS: {job.description[:1000]}
+KEY JD REQUIREMENTS: {job.description[:800]}
+
+Nazish's background: 5 years in data engineering and analytics,
+ThoughtSpot certified architect, built data models for 50+ enterprise clients
+handling up to 100 billion rows. Currently at ThoughtSpot as Senior Solutions Analyst.
 """
     try:
         return _call_gemini(prompt, max_tokens=500)
