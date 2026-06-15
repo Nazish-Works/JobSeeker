@@ -19,31 +19,28 @@ GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL   = "llama-3.1-8b-instant"
 
 
-def _call_gemini(prompt: str, max_tokens: int = 1000) -> str:
-    if not GEMINI_API_KEY:
-        log.error("GEMINI_API_KEY is not set! Add it to GitHub Secrets.")
+def _call_ai(prompt: str, max_tokens: int = 1000) -> str:
+    if not GROQ_API_KEY:
+        log.error("GROQ_API_KEY is not set!")
         return ""
     try:
-        if GEMINI_API_KEY.startswith("AIza"):
-            url     = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
-            headers = {"Content-Type": "application/json"}
-        else:
-            url     = GEMINI_URL
-            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {GEMINI_API_KEY}"}
-
         r = requests.post(
-            url,
-            headers=headers,
+            GROQ_URL,
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            },
             json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"maxOutputTokens": max_tokens}
+                "model": GROQ_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens
             },
             timeout=30
         )
         r.raise_for_status()
-        return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return r.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        log.error(f"Gemini API error: {e}")
+        log.error(f"Groq API error: {e}")
         return ""
 
 # ── Nazish's profile snapshot (used in prompts) ───────────────────────────────
@@ -139,7 +136,7 @@ JOB DESCRIPTION:
 {job.description[:2500]}
 """
     try:
-        text = _call_gemini(prompt, max_tokens=600)
+        text = _call_ai(prompt, max_tokens=600)
         # Strip markdown json fences if present
         text = text.replace("```json", "").replace("```", "").strip()
         return json.loads(text)
@@ -217,7 +214,7 @@ LinkedIn: https://www.linkedin.com/in/nazishmehdi-80b0a5188/
 Notice Period: 30 days
 """
     try:
-        return _call_gemini(prompt, max_tokens=2000)
+        return _call_ai(prompt, max_tokens=2000)
     except Exception as e:
         log.error(f"Resume tailoring failed for {job.job_id}: {e}")
         return ""
@@ -252,7 +249,7 @@ ThoughtSpot certified architect, built data models for 50+ enterprise clients
 handling up to 100 billion rows. Currently at ThoughtSpot as Senior Solutions Analyst.
 """
     try:
-        return _call_gemini(prompt, max_tokens=500)
+        return _call_ai(prompt, max_tokens=500)
     except Exception as e:
         log.error(f"Cover note generation failed: {e}")
         return ""
