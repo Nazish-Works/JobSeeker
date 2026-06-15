@@ -50,7 +50,9 @@ def _send(subject: str, body: str):
 
 
 def notify(matched_jobs: list, status: str = "success"):
-    now = datetime.now().strftime("%d %b %Y, %I:%M %p")
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(IST).strftime("%d %b %Y, %I:%M %p IST")
 
     if status == "failure":
         _send(
