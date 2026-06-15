@@ -62,6 +62,11 @@ SagasIT Analytics / AIMLEAP | Data Analyst | Mar 2021–Apr 2023
 - Deployed web scraping bots using Selenium and Python on Amazon WorkSpace.
 - Built data pipelines linking scraped content to PostgreSQL using SQL (pgAdmin).
 - Automated data extraction with UiPath, automated cleaning, appended results to Excel.
+
+AI Powered Personal Projects
+- Designed and shipped a production-grade personal finance app using Claude AI as a full-stack development assistant. Defined requirements, reviewed outputs, debugged issues, and iterated through 50+ development cycles entirely through natural language prompts.
+- Built Multi-user system with PIN authentication and admin/user role separation. Real-time cloud sync via Supabase REST API with PostgreSQL backend.
+- It demonstrates Ability to translate business requirements into technical specifications for AI tools , Iterative product thinking — identifying edge cases, UX gaps, and data flow issues and  Full-stack understanding — frontend rendering, REST APIs, database schema, auth, hosting
 """
 
 
