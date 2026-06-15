@@ -14,8 +14,9 @@ from modules.scraper import Job
 
 log = logging.getLogger(__name__)
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_URL     = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL   = "llama-3.1-8b-instant"
 
 
 def _call_gemini(prompt: str, max_tokens: int = 1000) -> str:
