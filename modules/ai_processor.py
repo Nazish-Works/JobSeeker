@@ -1,6 +1,6 @@
 """
 modules/ai_processor.py
-Uses Claude to:
+Uses Groq (free, llama-3.3-70b-versatile) to:
   1. Score job relevance (0–100) against Nazish's profile
   2. Tailor the resume bullet points for matched jobs
   3. Generate a short cover note
@@ -16,12 +16,13 @@ log = logging.getLogger(__name__)
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL   = "llama-3.1-8b-instant"
+GROQ_MODEL   = "llama-3.3-70b-versatile"
 
 
 def _call_ai(prompt: str, max_tokens: int = 1000) -> str:
+    """Calls Groq API — free tier, 14,400 requests/day."""
     if not GROQ_API_KEY:
-        log.error("GROQ_API_KEY is not set!")
+        log.error("GROQ_API_KEY is not set! Add it to GitHub Secrets.")
         return ""
     try:
         r = requests.post(
@@ -33,15 +34,19 @@ def _call_ai(prompt: str, max_tokens: int = 1000) -> str:
             json={
                 "model": GROQ_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens
+                "max_tokens": max_tokens,
+                "temperature": 0.3
             },
             timeout=30
         )
-        r.raise_for_status()
+        if r.status_code != 200:
+            log.error(f"Groq API returned {r.status_code}: {r.text[:200]}")
+            return ""
         return r.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
         log.error(f"Groq API error: {e}")
         return ""
+
 
 # ── Nazish's profile snapshot (used in prompts) ───────────────────────────────
 PROFILE_SUMMARY = """
@@ -99,10 +104,6 @@ AI Powered Personal Projects
 # ── 1. Relevance Scoring ─────────────────────────────────────────────────────
 
 def score_relevance(job: Job) -> dict:
-    """
-    Returns {"score": int, "reasons": str, "missing_skills": list}
-    score 0–100. Jobs below config threshold are skipped.
-    """
     prompt = f"""
 You are a senior recruiter evaluating candidate fit. Return ONLY valid JSON,
 no markdown, no explanation, no code fences.
@@ -137,31 +138,28 @@ JOB DESCRIPTION:
 """
     try:
         text = _call_ai(prompt, max_tokens=600)
-        # Strip markdown json fences if present
+        if not text:
+            log.warning(f"Groq empty response for {job.job_id} — fallback score 70")
+            return {"score": 70, "match_reasons": "Could not score — review manually", "missing_skills": [], "recommended_highlights": []}
         text = text.replace("```json", "").replace("```", "").strip()
         return json.loads(text)
     except Exception as e:
         log.error(f"Relevance scoring failed for {job.job_id}: {e}")
-        return {"score": 0, "match_reasons": "Error", "missing_skills": [], "recommended_highlights": []}
+        return {"score": 70, "match_reasons": "Scoring error — review manually", "missing_skills": [], "recommended_highlights": []}
 
 
 # ── 2. Resume Tailoring ───────────────────────────────────────────────────────
 
 def tailor_resume(job: Job, relevance_data: dict) -> str:
-    """
-    Returns a full tailored resume as plain text, customised for this specific JD.
-    """
     highlights = "\n".join(f"- {h}" for h in relevance_data.get("recommended_highlights", []))
     missing    = ", ".join(relevance_data.get("missing_skills", []))
 
-    # For Saudi jobs: add relocation note, omit photo recommendation, add passport
     region_note = ""
     if job.region == "Saudi":
         region_note = """
 IMPORTANT FOR SAUDI ROLE:
 - Mention availability to relocate to Saudi Arabia immediately (30-day notice)
 - Include passport number Z6029437 in personal details
-- Do NOT include photo recommendation (not required in Saudi)
 - Emphasise experience with large-scale enterprise clients (aligns with Saudi Aramco, STC, NEOM culture)
 """
     else:
@@ -169,26 +167,24 @@ IMPORTANT FOR SAUDI ROLE:
 IMPORTANT FOR INDIA ROLE:
 - Based in Bengaluru — highlight this for Bengaluru onsite roles (no relocation needed)
 - For Mumbai/Pune/Hyderabad roles, mention willingness to relocate within India (30-day notice)
-- For remote roles, mention current Bengaluru base and full remote availability
 """
 
     prompt = f"""
-You are a professional resume writer with 15 years of experience. Your task is to tailor
-Nazish Mehdi's resume for a specific job. Write like a human expert, not an AI.
+You are a professional resume writer with 15 years of experience. Tailor
+Nazish Mehdi's resume for the job below. Write like a human expert, not an AI.
 
-STRICT RULES — FOLLOW THESE EXACTLY:
-1. NEVER use these overused AI words: "spearheaded", "leveraged", "orchestrated",
-   "synergized", "utilized", "robust", "cutting-edge", "dynamic", "streamlined",
+STRICT RULES:
+1. NEVER use: "spearheaded", "leveraged", "orchestrated", "synergized",
+   "utilized", "robust", "cutting-edge", "dynamic", "streamlined",
    "transformative", "innovative", "passionate", "results-driven"
-2. Use SIMPLE, DIRECT language — write how a confident professional talks
-3. Keep ALL real numbers and achievements (100B rows, 50+ customers, etc.) — these are gold
-4. Only reorder and rephrase — NEVER invent skills or experience she doesn't have
-5. Mirror the JD's language naturally — if the JD says "data pipeline", use "data pipeline"
-6. Make changes SUBTLE — it should read like SHE wrote it, not a resume bot
-7. Start bullet points with strong past-tense verbs: Built, Designed, Led, Reduced, Improved
+2. Use SIMPLE, DIRECT language
+3. Keep ALL real numbers (100B rows, 50+ customers) — these are gold
+4. Only reorder and rephrase — NEVER invent skills she doesn't have
+5. Mirror the JD's language naturally
+6. Start bullet points with strong verbs: Built, Designed, Led, Reduced, Improved
 
-OUTPUT FORMAT: Plain text resume in this order:
-Professional Summary (3 lines max, punchy) → Technical Skills → Professional Experience
+OUTPUT FORMAT (plain text):
+Professional Summary (3 lines max) → Technical Skills → Professional Experience
 → Core Competencies → Certifications → Education
 
 JOB DETAILS:
@@ -197,15 +193,15 @@ Company: {job.company}
 Location: {job.location}, {job.region}
 Description: {job.description[:2500]}
 
-PRIORITISE THESE SKILLS FOR THIS ROLE:
+PRIORITISE THESE SKILLS:
 {highlights if highlights else "Python, SQL, cloud data platforms"}
 
-GAPS TO ACKNOWLEDGE HONESTLY:
+GAPS:
 {missing if missing else "None — strong match"}
 
 {region_note}
 
-NAZISH'S ACTUAL EXPERIENCE (use this as the base — do not change facts):
+NAZISH'S EXPERIENCE (base — do not change facts):
 {BASE_RESUME_BULLETS}
 
 CONTACT:
@@ -223,7 +219,6 @@ Notice Period: 30 days
 # ── 3. Cover Note ─────────────────────────────────────────────────────────────
 
 def generate_cover_note(job: Job, relevance_data: dict) -> str:
-    """Generates a short 3-paragraph cover note for the application."""
     prompt = f"""
 Write a short, human cover note (3 paragraphs) for Nazish Mehdi applying to this role.
 
@@ -232,13 +227,13 @@ TONE GUIDE:
 - Confident but not arrogant
 - Specific — mention the company by name, reference something real from the JD
 - NO clichés: "I am writing to express my interest", "I am a passionate professional",
-  "I would be a great fit", "Please find attached", "I look forward to hearing from you"
-- DO NOT start with "I" — start with something engaging
+  "I would be a great fit", "Please find attached"
+- DO NOT start with "I"
 
 STRUCTURE:
-Para 1: Lead with your strongest match point — make them want to read on
-Para 2: One specific achievement from her experience that directly maps to their need
-Para 3: One sentence on why THIS company specifically, then a confident close
+Para 1: Lead with strongest match point
+Para 2: One specific achievement that maps to their need
+Para 3: Why THIS company, then a confident close
 
 JOB: {job.title} at {job.company}, {job.location}
 WHY SHE FITS: {relevance_data.get('match_reasons', '')}
