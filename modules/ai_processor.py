@@ -9,13 +9,31 @@ Uses Claude to:
 import os
 import json
 import logging
-import anthropic
+import requests
 from modules.scraper import Job
 
 log = logging.getLogger(__name__)
 
-client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-MODEL  = "claude-sonnet-4-20250514"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_URL     = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+
+
+def _call_gemini(prompt: str, max_tokens: int = 1000) -> str:
+    """Calls Gemini 1.5 Flash API — free tier, 1500 requests/day."""
+    try:
+        r = requests.post(
+            f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"maxOutputTokens": max_tokens}
+            },
+            timeout=30
+        )
+        r.raise_for_status()
+        return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        log.error(f"Gemini API error: {e}")
+        return ""
 
 # ── Nazish's profile snapshot (used in prompts) ───────────────────────────────
 PROFILE_SUMMARY = """
@@ -104,11 +122,9 @@ JOB DESCRIPTION:
 {job.description[:2500]}
 """
     try:
-        response = client.messages.create(
-            model=MODEL, max_tokens=600,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        text = response.content[0].text.strip()
+        text = _call_gemini(prompt, max_tokens=600)
+        # Strip markdown json fences if present
+        text = text.replace("```json", "").replace("```", "").strip()
         return json.loads(text)
     except Exception as e:
         log.error(f"Relevance scoring failed for {job.job_id}: {e}")
@@ -175,11 +191,7 @@ LinkedIn: https://www.linkedin.com/in/nazishmehdi-80b0a5188/
 Passport: Z6029437 | Notice Period: 30 days
 """
     try:
-        response = client.messages.create(
-            model=MODEL, max_tokens=2000,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.content[0].text.strip()
+        return _call_gemini(prompt, max_tokens=2000)
     except Exception as e:
         log.error(f"Resume tailoring failed for {job.job_id}: {e}")
         return ""
@@ -200,11 +212,7 @@ WHY SHE FITS: {relevance_data.get('match_reasons', '')}
 JD HIGHLIGHTS: {job.description[:1000]}
 """
     try:
-        response = client.messages.create(
-            model=MODEL, max_tokens=500,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.content[0].text.strip()
+        return _call_gemini(prompt, max_tokens=500)
     except Exception as e:
         log.error(f"Cover note generation failed: {e}")
         return ""
