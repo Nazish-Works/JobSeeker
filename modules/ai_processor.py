@@ -19,9 +19,11 @@ GEMINI_URL     = "https://generativelanguage.googleapis.com/v1beta/models/gemini
 
 
 def _call_gemini(prompt: str, max_tokens: int = 1000) -> str:
-    """Calls Gemini 1.5 Flash API — free tier, 1500 requests/day."""
+    if not GEMINI_API_KEY:
+        log.error("GEMINI_API_KEY is not set! Add it to GitHub Secrets.")
+        return ""
     try:
-         if GEMINI_API_KEY.startswith("AIza"):
+        if GEMINI_API_KEY.startswith("AIza"):
             url     = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
             headers = {"Content-Type": "application/json"}
         else:
