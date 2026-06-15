@@ -21,8 +21,16 @@ GEMINI_URL     = "https://generativelanguage.googleapis.com/v1beta/models/gemini
 def _call_gemini(prompt: str, max_tokens: int = 1000) -> str:
     """Calls Gemini 1.5 Flash API — free tier, 1500 requests/day."""
     try:
+         if GEMINI_API_KEY.startswith("AIza"):
+            url     = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
+            headers = {"Content-Type": "application/json"}
+        else:
+            url     = GEMINI_URL
+            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {GEMINI_API_KEY}"}
+
         r = requests.post(
-            f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+            url,
+            headers=headers,
             json={
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {"maxOutputTokens": max_tokens}
