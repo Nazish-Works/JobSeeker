@@ -38,7 +38,7 @@ from modules.deduplicator   import SeenJobsStore
 from modules.ai_processor   import score_relevance, tailor_resume, generate_cover_note
 from modules.notifier import notify
 from modules.google_integration import (
-    save_resume_to_drive, log_job_to_sheet, send_notification_email
+    save_resume_to_drive, log_job_to_sheet, send_notification_email, load_existing_job_ids_from_sheet
 )
 
 # Create folders BEFORE logging setup
@@ -129,6 +129,8 @@ def run():
         log.info(f"Limiting to 50 jobs this run (will process rest next scan)")
         filtered = filtered[:50]
 
+    existing_sheet_ids = load_existing_job_ids_from_sheet()
+
     if not filtered:
         log.info("No new qualifying jobs this run. Exiting.")
         return
@@ -170,7 +172,7 @@ def run():
             )
 
         # Log to Sheets
-        log_job_to_sheet(job, rel, drive_url, cover)
+        log_job_to_sheet(job, rel, drive_url, cover, existing_ids=existing_sheet_ids)
 
         # Build notification entry
         notif_entry = {
