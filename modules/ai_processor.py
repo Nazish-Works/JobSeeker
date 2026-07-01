@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL   = "llama-3.3-70b-versatile"
+GROQ_MODEL = "mixtral-8x7b-32768"
 
 
 def _call_ai(prompt: str, max_tokens: int = 1000) -> str:
