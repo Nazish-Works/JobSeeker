@@ -42,14 +42,11 @@ SEARCH_KEYWORDS = [
 
 # --- Location Preferences ------------------------------------------------
 # India: open to onsite in these cities + remote
-INDIA_PREFERRED_CITIES = [
-    "Bengaluru", "Bangalore", "bengaluru", "bangalore", "karnataka",
-    "Mumbai", "Pune", "Hyderabad",
-]
+INDIA_PREFERRED_CITIES = ["Bengaluru", "Bangalore", "Mumbai", "Pune", "Hyderabad"]
 INDIA_ACCEPT_REMOTE = True   # remote accepted if no onsite match in preferred cities
 
 # Saudi Arabia: onsite only
-SAUDI_CITIES = ["Riyadh", "Jeddah", "Dhahran", "NEOM", "Dammam", "Khobar"]
+SAUDI_CITIES = ["Riyadh", "Jeddah", "Dhahran", "NEOM", "Dammam", "Khobar","Mecca","Madina"]
 SAUDI_ACCEPT_REMOTE = False  # onsite only for Saudi
 SAUDI_SKIP_NATIONALS_ONLY = True  # skip roles requiring Saudi nationals
 
