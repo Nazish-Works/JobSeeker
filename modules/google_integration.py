@@ -137,10 +137,36 @@ def _get_or_create_tab(sheets, tab_name: str) -> int:
 
     log.info(f"Created new tab: {tab_name}")
     return new_sheet_id
-
-
-def log_job_to_sheet(job, relevance_data: dict, drive_url: str, cover_note: str):
+def load_existing_job_ids_from_sheet() -> set:
+    """Reads all tabs in the sheet and returns a set of all existing job IDs."""
+    seen = set()
     try:
+        sheets = _sheets_service()
+        meta = sheets.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+        for sheet in meta.get("sheets", []):
+            tab_name = sheet["properties"]["title"]
+            try:
+                result = sheets.spreadsheets().values().get(
+                    spreadsheetId=SHEET_ID,
+                    range=f"'{tab_name}'!B:B"  # Column B = Job ID
+                ).execute()
+                for row in result.get("values", [])[1:]:  # Skip header
+                    if row and row[0]:
+                        seen.add(row[0].strip())
+            except Exception:
+                continue
+        log.info(f"Loaded {len(seen)} existing job IDs from sheet (dedup check)")
+    except Exception as e:
+        log.error(f"Could not load existing job IDs: {e}")
+    return seen
+
+def log_job_to_sheet(job, relevance_data: dict, drive_url: str, cover_note: str, existing_ids: set = None):
+    try:
+        # Skip if already in sheet
+        if existing_ids and job.job_id in existing_ids:
+            log.info(f"SHEET DEDUP: {job.title} @ {job.company} already exists — skipping")
+            return
+
         sheets = _sheets_service()
         tab_name = _now_ist().strftime("%-d %b %Y")
         _get_or_create_tab(sheets, tab_name)
